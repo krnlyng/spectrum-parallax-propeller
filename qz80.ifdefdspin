@@ -1,0 +1,4941 @@
+CON
+	SF			=	%10000000	' sign
+	ZF			=	%01000000	' zero
+	YF			=	%00100000	' undocumented y
+	HF			=	%00010000	' auxiliary (half) carry
+	XF			=	%00001000	' undocumented x
+	PF			=	%00000100	' parity
+	VF			=	PF		' overflow (shares the parity flag bit)
+	NF			=	%00000010	' negative
+	CF			=	%00000001	' carry
+
+	bit7			=	%10000000
+	bit6			=	%01000000
+	bit5			=	%00100000
+	bit4			=	%00010000
+	bit3			=	%00001000
+	bit2			=	%00000100
+	bit1			=	%00000010
+	bit0			=	%00000001
+	
+	io_cmd_out		=	$01		' command to write to an i/o port
+	io_cmd_in		=	$02		' command to read from an i/o port
+	io_cmd_break		=	$03		' command to execute a break (halt)
+	io_cmd_kbd		=	$04		' command to read the TRS-80 keyboard matrix
+
+	IFF1			=	%00000001	' first interrupt flip-flop
+	IFF2			=	%00000010	' second interrupt flip-flop
+	IM1			=	%00000100	' interrupt mode 1 flag
+	IM2			=	%00001000	' interrupt mode 2 flag
+	HALT			=	%00010000	' CPU is halted flag
+
+#ifdef TRS80
+#define	DISP_MEM_1K
+#endif
+#ifdef CGENIE
+#define	DISP_MEM_1K
+#endif
+#ifdef NASCOM
+#define	DISP_MEM_1K
+#endif
+#ifdef SPECTRUM
+#define	DISP_MEM_1K
+#endif
+
+VAR
+	long	cog
+
+PUB start(params, origin) : okay
+	stop
+	io_command := long[params][0]
+#ifdef BANKED_MEM
+	bankbase_ptr := long[params][0] + 4
+#endif
+#ifdef INTERRUPTS
+	irq_ptr := long[params][1]
+#endif
+#ifdef TRS80
+	screen_ptr := long[params][2]			' $3c00 to $3fff
+#endif TRS80
+#ifdef CGENIE
+	screen_ptr := long[params][2]			' $4400 to $47ff
+	colour_ptr := long[params][3]			' $f000 to $f3ff
+	font_ptr := long[params][4]			' $f400 to $f7ff
+#endif CGENIE
+#ifdef NASCOM
+	screen_ptr := long[params][2]			' $0800 to $0bff
+#endif NASCOM
+#ifdef SPECTRUM
+	screen_ptr := long[params][2]-$4000		' $4000 to $5aff
+#endif SPECTRUM
+'	R := CNT & $FF
+	PC := origin
+'	COGINIT(COGID, @entry, 0)
+	cog:=COGNEW(@entry, 0)+1
+
+PUB stop
+	if cog
+		COGSTOP(cog~ - 1)
+
+PUB sethl(val)
+  H:=(val>>8)&255
+  L:=val&255
+
+PUB seti(val)
+  I_reg:=val
+
+PUB setSNAregs(ptr)
+  I_reg:=byte[ptr][0]
+  l2_reg:=byte[ptr][1]
+  h2_reg:=byte[ptr][2]
+  e2_reg:=byte[ptr][3]
+  d2_reg:=byte[ptr][4]
+  c2_reg:=byte[ptr][5]
+  b2_reg:=byte[ptr][6]
+  f2_reg:=byte[ptr][7]
+  a2_reg:=byte[ptr][8]
+  L:=byte[ptr][9]
+  H:=byte[ptr][10]
+  E:=byte[ptr][11]
+  D:=byte[ptr][12]
+  C:=byte[ptr][13]
+  B:=byte[ptr][14]
+  ix_reg:=byte[ptr][15]+(byte[ptr][16]<<8)
+  iy_reg:=byte[ptr][17]+(byte[ptr][18]<<8)
+  iff:=byte[ptr][19]
+  R:=byte[ptr][20]
+  R2:=byte[ptr][20]
+  F:=byte[ptr][21]
+  A:=byte[ptr][22]
+  SP:=byte[ptr][23]+(byte[ptr][24]<<8)+2  '+2 to get stack
+  iff & = 3
+  if(byte[ptr][25]==1)
+    iff|=IM1
+  if(byte[ptr][25]==2)
+    iff|=IM2
+
+PUB setSP(val)
+  SP:=val
+
+PUB getSP : val
+  val:=SP
+
+PUB setregs(ptr)
+  A:=byte[ptr][0]
+  F:=byte[ptr][1]
+  C:=byte[ptr][2]
+  B:=byte[ptr][3]
+  L:=byte[ptr][4]
+  H:=byte[ptr][5]
+  PC:=byte[ptr][6]+(byte[ptr][7]<<8)
+  SP:=byte[ptr][8]+(byte[ptr][9]<<8)
+  R:=byte[ptr][10]
+  E:=byte[ptr][13]
+  D:=byte[ptr][14]
+  c2_reg:=byte[ptr][15]
+  b2_reg:=byte[ptr][16]
+  e2_reg:=byte[ptr][17]
+  d2_reg:=byte[ptr][18]
+  l2_reg:=byte[ptr][19]
+  h2_reg:=byte[ptr][20]
+  a2_reg:=byte[ptr][21]
+  f2_reg:=byte[ptr][22]
+  ix_reg:=byte[ptr][23]+(byte[ptr][24]<<8)
+  iy_reg:=byte[ptr][25]+(byte[ptr][26]<<8)
+  iff:=byte[ptr][27]
+
+DAT
+	org	0
+entry
+
+#ifdef TriBladeProp
+'The TriBladeProp Blade #2 driver presets the latch to enable SRAM -CE(U23)=0 and hold LE=0
+datax		mov     outa, ram_latched		' -WE=1 -OE=1, all other bits=0
+outx		mov     dira, ram_dir_read		' setup direction to read
+		jmp	#fetch				' contains hub RAM address for ea (overwrites jmp)
+#endif TriBladeProp
+
+#ifdef RamBladeProp
+'The RamBladeProp needs this?
+datax		mov     outa, #0
+outx		jmp	#fetch
+#endif RamBladeProp
+
+#ifdef DracBladeProp
+outx		jmp	#fetch				' contains address masks for ram_address setup (overwrites jmp)
+oldx		long	-1				' for RAM latch speed up
+#endif DracBladeProp
+
+io_command	long    0-0				' io command address
+io_break	long	io_cmd_break << 24 | @@@C_reg << 8
+
+#ifdef INTERRUPTS
+irq_ptr		long	0-0				' interrupt request address
+do_int		long	@@@do_interrupt
+#endif INTERRUPTS
+
+#ifdef BANKED_MEM
+bankbase_ptr	long	0-0
+banklimit	long	$c000
+bankbase	long	0
+#endif BANKED_MEM
+
+table_00	long	@@@opcodes_00
+table_cb	long	@@@opcodes_cb
+table_ed	long	@@@opcodes_ed
+table_xy	long	@@@opcodes_xy
+table_xy_cb	long	@@@opcodes_xy_cb
+break_ptr	long	@@@break
+postop_ptr	long	@@@postop_table
+debug_on	long	0
+
+#ifdef TRS80
+mask_1k	long	1023
+screen_ptr	long	0-0				' address of the 1K screen buffer in hub RAM
+rd_memory_ptr	long	@@@rd_memory			' dispatch table for read memory handlers
+wr_memory_ptr	long	@@@wr_memory			' dispatch table for write memory handlers
+#endif TRS80
+
+#ifdef CGENIE
+mask_1k	long	1023
+screen_ptr	long	0-0				' address of the 1K screen buffer in hub RAM
+colour_ptr	long	0-0				' address of the 1K colour buffer in hub RAM
+font_ptr	long	0-0				' address of the 1K font buffer in hub RAM
+rd_memory_ptr	long	@@@rd_memory			' dispatch table for read memory handlers
+wr_memory_ptr	long	@@@wr_memory			' dispatch table for write memory handlers
+datx		long	0
+#endif CGENIE
+
+#ifdef NASCOM
+screen_ptr	long	0-0				' address of the 1K screen buffer in hub RAM
+mask_1k	long	1023
+rd_memory_ptr	long	@@@rd_memory			' dispatch table for read memory handlers
+wr_memory_ptr	long	@@@wr_memory			' dispatch table for write memory handlers
+#endif NASCOM
+
+#ifdef SPECTRUM
+screen_ptr	long	0-0				' address of the full screen buffer in hub RAM - $4000 as that's where it starts in spectrum ram
+rd_memory_ptr	long	@@@rd_memory			' dispatch table for read memory handlers
+wr_memory_ptr	long	@@@wr_memory			' dispatch table for write memory handlers
+#endif SPECTRUM
+
+regptr		long	@@@C_reg				' C register address
+XY		long					' either IX or IY register address
+LXY		long	0				' dito
+HXY		long	0				' dito + 1
+low_word	long	$0000ffff
+
+C		long	0
+B		long	0
+E		long	0
+D		long	0
+L		long	0
+H		long	0
+F		long	ZF				' reset value is zero flag set
+A		long	0
+R		long	0				' refresh register
+R2		long	0				' bit #7 of last write to R
+IFF		long	IFF1 | IFF2			' interrupt flip-flops (enabled)
+SP		long	0				' stack pointer
+PC		long	0				' program counter
+
+'***************************************************************************************************************
+'
+' RET if the condition is true
+'
+ret_cond
+	if_nz	jmp	#do_ret
+		' fall through
+
+'***************************************************************************************************************
+' Fetch opcode and dispatch through table_00
+'
+fetch
+#ifdef INTERRUPTS
+		rdlong	tmp, irq_ptr		WZ
+	if_nz	mov	lmm_pc, do_int
+	if_nz	call	#lmm_next
+fetch_0
+#endif INTERRUPTS
+#ifdef COUNT_R
+		add	R, #1
+#endif COUNT_R
+		call	#rd_opcode
+		mov	opcode, alu
+		shl	alu, #2
+		add	alu, table_00
+fetch_1
+		rdlong	vector, alu
+		jmp	vector
+
+'***************************************************************************************************************
+' Jump to next address in vector
+'
+jmp_vector
+		shr	vector, #9
+		jmp	vector
+
+#ifdef TRS80
+mem_page_1k
+		mov	outx, ea
+		shr	outx, #10			' discard 10 bits
+mem_table	add	outx, 0-0			' patched with table address
+		rdbyte	outx, outx
+		jmp	outx
+rd_nop
+rd_i_o
+		mov	alu, #$ff
+		jmp	rd_byte_ret
+rd_scr
+		mov	outx, ea
+		and	outx, mask_1k
+		add	outx, screen_ptr
+		rdbyte	alu, outx
+		jmp	rd_byte_ret
+rd_kbd
+		mov	t1, #io_cmd_kbd
+		shl	t1, #16
+		or	t1, ea
+		shl	t1, #8
+		call	#rd_port_cmd
+		jmp	rd_byte_ret
+wr_scr
+		mov	outx, ea
+		and	outx, mask_1k
+		add	outx, screen_ptr
+		wrbyte	alu, outx
+wr_rom
+wr_nop
+wr_i_o
+		jmp	wr_byte_ret			' not yet
+#endif TRS80
+
+
+#ifdef CGENIE
+mem_page_1k
+		mov	outx, ea
+		shr	outx, #10			' discard 10 bits
+mem_table	add	outx, 0-0			' patched with table address
+		rdbyte	outx, outx
+		jmp	outx
+rd_nop
+rd_i_o
+		mov	alu, #$ff
+		jmp	rd_byte_ret
+rd_col
+		movs	rd_add, #colour_ptr
+		jmp	#rd_any
+rd_scr
+		movs	rd_add, #screen_ptr
+rd_any
+		mov	outx, ea
+		and	outx, mask_1k
+rd_add		add	outx, 0-0
+		rdbyte	alu, outx
+		jmp	rd_byte_ret
+rd_fnt
+		mov	outx, ea
+		and	outx, mask_1k
+		add	outx, font_ptr
+		rdbyte	alu, outx
+		rev	alu, #24
+		jmp	rd_byte_ret
+rd_kbd
+		mov	t1, #io_cmd_kbd
+		shl	t1, #16
+		or	t1, ea
+		shl	t1, #8
+		call	#rd_port_cmd
+		jmp	rd_byte_ret
+wr_col
+		movs	wr_add, #colour_ptr
+		jmp	#wr_any
+wr_scr
+		movs	wr_add, #screen_ptr
+wr_any
+		mov	outx, ea
+		and	outx, mask_1k
+wr_add		add	outx, 0-0
+		wrbyte	alu, outx
+wr_rom
+wr_nop
+wr_i_o							' not yet
+		jmp	wr_byte_ret
+wr_fnt
+		mov	outx, ea
+		and	outx, mask_1k
+		add	outx, font_ptr
+		mov	datx, alu
+		rev	datx, #24
+		wrbyte	datx, outx
+		jmp	wr_byte_ret
+#endif CGENIE
+
+#ifdef NASCOM
+mem_page_1k
+		mov	outx, ea
+		shr	outx, #10			' discard 10 bits
+mem_table	add	outx, 0-0			' patched with table address
+		rdbyte	outx, outx
+		jmp	outx
+rd_nop
+rd_i_o
+		mov	alu, #$ff
+		jmp	#rd_byte_ret
+rd_scr
+		mov	outx, ea
+		and	outx, mask_1k
+		add	outx, screen_ptr
+		rdbyte	alu, outx
+		jmp	#rd_byte_ret
+wr_scr
+		mov	outx, ea
+		and	outx, mask_1k
+		add	outx, screen_ptr
+		wrbyte	alu, outx
+wr_rom
+wr_nop
+wr_i_o
+		jmp	#wr_byte_ret
+#endif NASCOM
+
+#ifdef SPECTRUM
+mem_page_1k
+		mov	outx, ea
+		shr	outx, #10			' discard 10 bits
+mem_table	add	outx, 0-0			' patched with table address
+		rdbyte	outx, outx
+		jmp	outx
+
+wr_scr		mov	outx, ea
+		add	outx, screen_ptr
+		wrbyte	alu, outx
+                jmp     #wr_ram
+wr_rom
+		jmp	#wr_byte_ret
+#endif SPECTRUM
+
+'***************************************************************************************************************
+'
+'	Memory access functions (TriBladeProp)
+'
+'***************************************************************************************************************
+#ifdef TriBladeProp
+'                                          +-------- -CS (U26 FLASH)   -+                                  
+'                                          |+------- -CS (J22 microSD)  +- Latched pins...                 
+'                                          ||+------ -RST3              |    passes when LE=1              
+'             (P30) SO ---+                |||+----- -RST1              |    latches on  LE low going edge 
+'             (P31) SI --+|                ||||+---- -CE (U24 SRAM-hi)  |    latched on  LE=0              
+'                        ||+---- -WE(SDA)  |||||+--- -CE (U23 SRAM-lo)  |                                  
+'                        |||+--- -OE(SCL)  ||||||+-- A20                |                                  
+'                        ||||+--  LE       |||||||+- A19               -+                                  
+'                        |||||             ||||||||                                                        
+'          P31...P0 --> %00xx0_xxxxxxxxxxx_xxxxxxxx_xxxxxxxx  
+ram_latched	long	%00110_00000000000_00000000_00000000	' -WE=1 -OE=1 (LE=0)                               
+ram_read	long	%00100_00000000000_00000000_00000000	' -WE=1 -OE=0 (LE=0)    
+ram_write	long	%00010_00000000000_00000000_00000000	' -WE=0 -OE=1 (LE=0)
+ram_dir_read	long	%00110_11111111111_11111111_00000000	' outputs WE, OE, A0-18, inputs D0-7
+ram_dir_write	long	%00110_11111111111_11111111_11111111	' outputs WE, OE, A0-18, D0-7
+ram_dir_input	long	%00000_00000000000_00000000_00000000	' all inputs (for Ram Disk access)
+'                              +---------+ +------+ +------+
+'                              A18......A8 A7....A0 D7....D0
+'                                          Q7....Q0
+'
+'***************************************************************************************************************
+' Read a byte from RAM[HL] into the alu
+'
+rd_byte_hl
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		jmp	#rd_byte
+
+'***************************************************************************************************************
+'
+' Read a byte from address [PC++] into alu
+'
+rd_opcode
+		mov	ea, PC
+		add	PC, #1
+		and	PC, low_word
+		' fall through
+'***************************************************************************************************************
+' Read a byte from RAM[ea] into the alu
+'
+rd_byte
+#ifdef BANKED_MEM
+		cmp	ea, banklimit		WC
+	if_c	add	ea, bankbase
+#endif BANKED_MEM
+#ifdef DISP_MEM_1K
+		movs	mem_table, #rd_memory_ptr
+		jmp	#mem_page_1k
+rd_rom
+rd_ram
+#endif DISP_MEM_1K
+		mov	outx, ea
+		shl	outx, #8			' shift address 8 bits
+		or	outx, ram_read			' add -WE=1 -OE=0
+		mov	outa, outx			' pc (shifted 8 bits + -WE=1 -OE=0)
+		nop					' delay for sram access time
+		mov     alu, ina			' read SRAM
+		and     alu, #$ff			' extract 8 bits
+rd_byte_ret
+rd_opcode_ret
+rd_byte_hl_ret
+		ret
+
+'***************************************************************************************************************
+' Write a byte from the alu into RAM[ea]
+'
+wr_byte
+#ifdef BANKED_MEM
+		cmp	ea, banklimit		WC
+	if_c	add	ea, bankbase
+#endif BANKED_MEM
+#ifdef DISP_MEM_1K
+		movs	mem_table, #wr_memory_ptr	' dispatch according to the wr_memory table
+		jmp	#mem_page_1k			' in 1k pages
+wr_ram
+#endif DISP_MEM_1K
+		mov	outx, ea
+		shr	outx, #8		
+		mov	outx, ea
+		shl	outx, #8			' shift address 8 bits
+		or	outx, ram_write			' add -WE=0 -OE=1
+		mov	datax, alu
+		and	datax, #$ff			' ensure upper bytes=0
+		or	outx, datax			' add data bits to be written
+		mov	outa, outx			' output -WE=0 -OE=1, address bits, data bits
+		mov	dira, ram_dir_write		' set data bits to outputs
+		or      outa, ram_latched		' set -WE=0->1 -OE=1->1  (end write)
+		mov     dira, ram_dir_read		' set data bits to inputs
+		mov     outa, ram_read			' set -WE=1 -OE=0
+wr_byte_ret
+		ret
+#endif TriBladeProp
+
+
+
+
+
+'***************************************************************************************************************
+'
+'	Memory access functions (RamBladeProp)
+'
+'***************************************************************************************************************
+#ifdef RamBladeProp
+' RamBlade Hardware Access:
+'       P0-18  = A0-18   SRAM address
+'       P19    = -CS     microSD
+'       P20    = -CE     SRAM & enable eeprom
+'       P21    = -WE     SRAM & enable eeprom
+'       P22    = SO      \ UART
+'       P23    = SI      /
+'       P24-31 = D0-7    SRAM \ * see below
+'                             | P28 = SCL eeprom
+'                             | P29 = SDA eeprom
+'                             | P30 = prog SO
+'                             / P31 = prog SI
+'
+'         (microSD) DO ---------+
+'         (microSD) DI --------+| +--------  SI (P23)
+'         (microSD) CLK-------+|| |+-------  SO (P22)
+'                             ||| ||
+'             (P28) SCL ----+ ||| ||+------ -WE (SRAM & enable eeprom)
+'             (P29) SDA ---+| ||| |||+----- -CE (SRAM & enable eeprom)
+'             (P30) SO ---+|| ||| ||||+---- -CS (microSD)
+'             (P31) SI --+||| ||| |||||
+'                        |||| ||| |||||
+'          P31...P0 --> %xxxxxxxx_00xxx_xxxxxxxxxxxxxxxxxxx
+'       10K pullups -->    ** ***   ***
+'                        +------+       +-----------------+
+'                        D7....D0       A18..............A0
+ram_dir_read    long    %00000000_00010_1111111111111111111 ' outputs CE, A0-18           (sram read)
+ram_dir_write   long    %11111111_00000_1111111111111111111 ' outputs A0-18, D0-7         (sram disabled)
+ram_dir_wstrobe long    %11111111_00110_1111111111111111111 ' outputs CE, WE, A0-19, D0-7 (write strobe)
+'
+'***************************************************************************************************************
+' Read a byte from RAM[HL] into the alu
+'
+rd_byte_hl
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		jmp	#rd_byte
+
+'***************************************************************************************************************
+'
+' Read a byte from address [PC++] into alu
+'
+rd_opcode
+		mov	ea, PC
+		add	PC, #1
+		and	PC, low_word
+		' fall through
+'***************************************************************************************************************
+' Read a byte from RAM[ea] into the alu
+'
+rd_byte
+#ifdef BANKED_MEM
+		cmp	ea, banklimit		WC
+	if_c	add	ea, bankbase
+#endif BANKED_MEM
+#ifdef DISP_MEM_1K
+		movs	mem_table, #rd_memory_ptr
+		jmp	#mem_page_1k
+rd_rom
+rd_ram
+#endif DISP_MEM_1K
+		mov	OUTA, ea			' apply the read address incl -CE=0 -WE=0
+		mov	DIRA, ram_dir_read		' set outputs A0-18, CE
+		nop					' sram delay required
+		mov	alu, INA			' read byte from SRAM
+		shr	alu, #24			' bits 31..24 to 7..0
+		mov	DIRA, #0			' tri state
+rd_byte_ret
+rd_opcode_ret
+rd_byte_hl_ret
+		ret
+
+'***************************************************************************************************************
+' Write a byte from the alu into RAM[ea]
+'
+wr_byte
+#ifdef BANKED_MEM
+		cmp	ea, banklimit		WC
+	if_c	add	ea, bankbase
+#endif BANKED_MEM
+#ifdef DISP_MEM_1K
+		movs	mem_table, #wr_memory_ptr
+		jmp	#mem_page_1k
+wr_ram
+#endif DISP_MEM_1K
+		shl	alu, #24			' data byte in bits 31..24
+		or	alu, ea				' data in 31..24, address in 18..0
+		or	OUTA, alu
+		mov	DIRA, ram_dir_write		' set outputs A0-18
+		mov	DIRA, ram_dir_wstrobe		' -CE=-WE= 1 -> 0       \ ce + we pulse
+		shr	alu, #24			' data byte in bits 7..0 | delay
+		mov	DIRA, ram_dir_write		' address + data only   /
+		mov	DIRA, #0			' tri state
+wr_byte_ret
+		ret
+#endif RamBladeProp
+
+
+
+
+
+'***************************************************************************************************************
+'
+'	Memory access functions (DracBladeProp)
+'
+'***************************************************************************************************************
+#ifdef DracBladeProp
+'****************** Dr_Acula single propeller driver **************************
+' Three latches to access the ram chip - see main program for spin version
+' uses variables 'ea' and 'alu'. skip banked memory and checking for out of
+' bounds address will need two nop instructions in /rd and /wr to be sure 
+'
+dir_138_read	long    %00000000_00000000_00001111_00000000	' for reads so data lines are tristate till the read
+dir_138_write	long	%00000000_00000000_00001111_11111111	' for writes so data lines are outputs
+address_low	long	%00000000_00000000_00000100_00000000	' low address latch = xxxx010x and gate low xxxxxxx0
+address_mid	long	%00000000_00000000_00000110_00000000	' middle address latch = xxxx011x and gate low xxxxxxx0
+address_high	long	%00000000_00000000_00001000_00000000	' high address latch = xxxx100x and gate low xxxxxxx0
+write_enable	long	%00000000_00000000_00000010_00000000	' write enable xxxx001x and gate low xxxxxxx0
+'
+'***************************************************************************************************************
+' Read a byte from RAM[HL] into the alu
+'
+rd_byte_hl
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		jmp	#rd_byte
+
+'***************************************************************************************************************
+'
+' Read a byte from address [PC++] into alu
+'
+rd_opcode
+		mov	ea, PC
+		add	PC, #1
+		and	PC, low_word
+		' fall through
+'***************************************************************************************************************
+' Read a byte from RAM[ea] into the alu
+'
+rd_byte
+#ifdef DISP_MEM_1K
+		movs	mem_table, #rd_memory_ptr
+		jmp	#mem_page_1k
+rd_rom
+rd_ram
+#endif DISP_MEM_1K
+		call	#ram_address			' sets up the latches with the correct ram address
+		mov	DIRA, dir_138_read		' for reads so P0-P7 tristate till do read
+		mov	OUTA, #$0			' set 000 low 138 read, low gate and P0-P7 are inputs
+		nop					' none does not work, 1 does work
+		mov	alu, INA			' read SRAM
+		and	alu, #$ff			' extract 8 bits
+		or	OUTA, #%1_00000000		' set the gate high again
+		mov	DIRA, #0			' tristate all pins
+rd_byte_ret
+rd_opcode_ret
+rd_byte_hl_ret
+		ret
+
+'***************************************************************************************************************
+' Write a byte from the alu into RAM[ea]
+'
+wr_byte
+#ifdef DISP_MEM_1K
+		movs	mem_table, #wr_memory_ptr
+		jmp	#mem_page_1k
+wr_ram
+#endif DISP_MEM_1K
+        	call	#ram_address			' sets up the latches with the correct ram address
+        	mov	outx, alu			' get the byte to output
+        	and	outx, #$ff			' ensure upper bytes=0
+        	or	outx, write_enable		' or with correct 138 address which is the same as latchdirection2
+        	mov	OUTA, outx			' send it out
+        	nop					' NOP  needs at least one due to 138 propogation delay
+        	or	OUTA, #%1_00000000		' set it high again
+        	mov	DIRA, #0			' tristate all pins
+wr_byte_ret
+		ret
+
+'***************************************************************************************************************
+' Sets up the DracBlade RAM latches.
+' BANKED_MEM undefined: assumes high latch A16-A18 low so only accesses 64K of RAM
+' BANKED_MEM defined: adds current bank base for addresses below banklimit
+ram_address
+#ifdef BANKED_MEM
+		cmp	ea, banklimit		WC
+	if_c	add	ea, bankbase
+#endif BANKED_MEM
+		mov	DIRA, dir_138_write		' set up the pins for programming latch chips
+		mov	outx, ea			' get the address into a temp variable
+		and	outx, #$ff			' mask the low byte
+		or	outx, address_low		' or with 138 low address
+		mov	OUTA, outx			' send it out with gate low
+		xor	oldx, ea
+		andn	oldx, #$ff
+		or	OUTA, #%1_00000000		' set gate high again and repeat for the middle byte
+		tjz	oldx, #:done
+		mov	outx, ea			' get the address into a temp variable
+		shr	outx, #8			' shift right by 8 places
+		and	outx, #$ff			' mask the middle byte
+		or	outx, address_mid		' or with 138 middle address
+		mov	OUTA, outx			' send it out with gate low
+		mov	outx, ea
+		or	OUTA, #%1_00000000		' set gate high again
+#ifdef BANKED_MEM
+		andn	oldx, low_word
+		tjz	oldx, #:done
+		shr	outx, #16			' shift right by 16 places
+		and	outx, #$07			' mask 3 bits in the high byte
+		or	outx, address_high		' or with 138 high address
+		mov	OUTA, outx			' send it out with gate low
+		or	OUTA, #%1_00000000		' set gate high again
+#endif BANKED_MEM
+:done		mov	oldx, ea
+ram_address_ret
+		ret
+#endif DracBladeProp
+
+
+
+
+
+'***************************************************************************************************************
+'
+' Read a word from address [PC++] into alu
+'
+rd_opword
+		mov	ea, PC
+		add	PC, #2
+		and	PC, low_word
+		jmp	#rd_word
+
+'***************************************************************************************************************
+'
+' Pop a word off the stack
+'
+pop_alu
+		mov	ea, SP
+		add	SP, #2
+		and	SP, low_word
+
+'***************************************************************************************************************
+'
+' Read a word from address [ea] into alu
+'
+' clobbers: t1
+'
+rd_word
+		call	#rd_byte
+		mov	t1, alu
+		add	ea, #1
+		and	ea, low_word
+		call	#rd_byte
+		shl	alu, #8
+		or	alu, t1
+rd_word_ret
+rd_opword_ret
+pop_alu_ret
+		ret
+
+'***************************************************************************************************************
+'
+' Call a restart vector
+'
+rst
+		mov	alu, opcode
+		and	alu, #$38
+		jmp	#do_call
+
+'***************************************************************************************************************
+'
+' CALL if the condition is true
+'
+call_cond
+		call	#rd_opword
+	if_z	jmp	#fetch			' conidition not true
+		' fall through
+
+'***************************************************************************************************************
+'
+' Call subroutine
+'
+do_call
+		xor	alu, PC			' swap alu and PC
+		xor	PC, alu
+		xor	alu, PC
+
+'***************************************************************************************************************
+' Push a register from alu and jump to fetch
+'
+push_reg
+		movs	push_reg_ret, #fetch
+		' fall through
+
+'***************************************************************************************************************
+'
+' Push a word to the stack
+'
+push_alu
+		sub	SP, #2
+		and	SP, low_word
+		mov	ea, SP
+
+'***************************************************************************************************************
+'
+' Write a word from alu to address [ea]
+'
+wr_word
+		call	#wr_byte
+		add	ea, #1
+		and	ea, low_word
+		shr	alu, #8
+		call	#wr_byte
+wr_word_ret
+push_alu_ret
+push_reg_ret
+		ret
+
+'***************************************************************************************************************
+' Write a byte from the alu to an I/O port
+'
+wr_port
+#ifdef TriBladeProp
+		mov     dira, ram_dir_input		' pass I/O to another cog
+#endif TriBladeProp
+		mov	t1, #io_cmd_out
+		shl	t1, #16
+		or	t1, ea
+		shl	t1, #8
+		or	t1, alu
+		wrlong	t1, io_command
+:wait		rdlong	t1, io_command			'...and wait for it to be completed.
+		shr	t1, #24		WZ, NR
+	if_nz	jmp	#:wait
+#ifdef TriBladeProp
+		mov     dira, ram_dir_read		' take I/O from another cog
+#endif TriBladeProp
+#ifdef BANKED_MEM
+		rdlong	bankbase, bankbase_ptr		' bankbase may have been modified
+#endif BANKED_MEM
+		neg	oldx, oldx			' invalidate oldx
+wr_port_ret
+		ret
+
+'***************************************************************************************************************
+' Read a byte from an I/O port into the alu
+'
+rd_port
+		mov	t1, #io_cmd_in
+		shl	t1, #16
+		or	t1, ea
+		shl	t1, #8
+rd_port_cmd
+#ifdef TriBladeProp
+		mov     dira, ram_dir_input		' pass I/O to another cog
+#endif TriBladeProp
+		wrlong	t1, io_command
+:wait		rdlong	t1, io_command			'...and wait for it to be completed.
+		shr	t1, #24		WZ, NR
+	if_nz	jmp	#:wait
+#ifdef TriBladeProp
+		mov     dira, ram_dir_read		' take I/O from another cog
+#endif TriBladeProp
+		mov	alu, t1
+		and	alu, #$ff
+		neg	oldx, oldx
+rd_port_cmd_ret
+rd_port_ret
+		ret
+
+'***************************************************************************************************************
+' Transfer address (IX/Y+disp8) to ea
+'
+mxy_to_ea
+		movs	mxy_ret, #jmp_vector
+		' fall through
+
+'***************************************************************************************************************
+' Compute memory address for IX/Y + disp8
+'
+mxy
+		call	#rd_opcode
+		shl	alu, #24
+		sar	alu, #24
+		rdword	ea, XY
+		add	ea, alu
+		and	ea, low_word
+mxy_ret
+		ret
+
+'***************************************************************************************************************
+' Transfer B register to alu
+'
+b_to_alu
+		mov	alu, B
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer C register to alu
+'
+c_to_alu
+		mov	alu, C
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer D register to alu
+'
+d_to_alu
+		mov	alu, D
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer E register to alu
+'
+e_to_alu
+		mov	alu, E
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer H register to alu
+'
+h_to_alu
+		mov	alu, H
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer L register to alu
+'
+l_to_alu
+		mov	alu, L
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer (HL) to alu
+'
+m_to_alu
+		movs	rd_byte_hl_ret, #jmp_vector
+		jmp	#rd_byte_hl
+
+'***************************************************************************************************************
+' Transfer A register to alu
+'
+a_to_alu
+		mov	alu, A
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer HX or HY register to alu
+'
+hxy_to_alu
+		rdbyte	alu, HXY
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer LX or LY register to alu
+'
+lxy_to_alu
+		rdbyte	alu, LXY
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer memory (IX/Y+disp8) to alu
+'
+mxy_to_alu
+		call	#mxy
+		movs	rd_byte_ret, #jmp_vector
+		jmp	#rd_byte
+
+'***************************************************************************************************************
+' Transfer port [ea] to alu
+'
+port_to_alu
+		movs	rd_port_ret, #jmp_vector
+		jmp	#rd_port
+
+'***************************************************************************************************************
+' Transfer BC register pair to alu
+'
+bc_to_alu
+		mov	alu, B
+		shl	alu, #8
+		or	alu, C
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer DE register pair to alu
+'
+de_to_alu
+		mov	alu, D
+		shl	alu, #8
+		or	alu, E
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer HL register pair to alu
+'
+hl_to_alu
+		mov	alu, H
+		shl	alu, #8
+		or	alu, L
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer AF register pair to alu
+'
+af_to_alu
+		mov	alu, A
+		shl	alu, #8
+		or	alu, F
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer SP register to alu
+'
+sp_to_alu
+		mov	alu, SP
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer IX or IY register to alu
+'
+xy_to_alu
+		rdword	alu, XY
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer BC register pair to ea
+'
+bc_to_ea
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer DE register pair to ea
+'
+de_to_ea
+		mov	ea, D
+		shl	ea, #8
+		or	ea, E
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Transfer HL register pair to ea
+'
+hl_to_ea
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Get immediate byte at mem[PC++] into ea
+'
+imm8_to_ea
+		call	#rd_opcode
+		mov	ea, alu
+		jmp	#jmp_vector
+
+imm8_to_ina
+		call	#rd_opcode
+                mov     ea, A
+                shl     ea, #8
+		or	ea, alu
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Pop BC register pair off the stack
+'
+pop_bc
+		call	#pop_alu
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to BC register pair
+'
+alu_to_bc
+		mov	C, alu
+		and	C, #$ff
+		shr	alu, #8
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to B register
+'
+alu_to_b
+		mov	B, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to C register
+'
+alu_to_c
+		mov	C, alu
+		jmp	#fetch
+
+
+'***************************************************************************************************************
+' Pop DE register pair off the stack
+'
+pop_de
+		call	#pop_alu
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to DE register pair
+'
+alu_to_de
+		mov	E, alu
+		and	E, #$ff
+		shr	alu, #8
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to D register
+'
+alu_to_d
+		mov	D, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to E register
+'
+alu_to_e
+		mov	E, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Pop HL register pair off the stack
+'
+pop_hl
+		call	#pop_alu
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to HL register pair
+'
+alu_to_hl
+		mov	L, alu
+		and	L, #$ff
+		shr	alu, #8
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to H register
+'
+alu_to_h
+		mov	H, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to L register
+'
+alu_to_l
+		mov	L, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to (HL)
+'
+alu_to_m
+		movs	wr_byte_ret, #fetch
+		jmp	#wr_byte
+
+'***************************************************************************************************************
+' Pop AF register pair off the stack
+'
+pop_af
+		call	#pop_alu
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to AF register pair
+'
+alu_to_af
+		mov	F, alu
+		and	F, #$ff
+		shr	alu, #8
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to A register
+'
+alu_to_a
+		mov	A, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to HX or HY register
+'
+alu_to_hxy
+		wrbyte	alu, HXY
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to LX or LY register
+'
+alu_to_lxy
+		wrbyte	alu, LXY
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Transfer alu to output port [ea]
+'
+alu_to_port
+		movs	wr_port_ret, #fetch
+		jmp	#wr_port
+
+'***************************************************************************************************************
+' Transfer alu to SP register
+'
+alu_to_sp
+		mov	SP, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+'
+' Return from subroutine
+'
+do_ret
+		call	#pop_alu
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to PC register
+'
+alu_to_pc
+		mov	PC, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Pop AF register pair off the stack
+'
+pop_xy
+		call	#pop_alu
+		' fall through
+
+'***************************************************************************************************************
+' Transfer alu to IX or IY register
+'
+alu_to_xy
+		wrword	alu, XY
+		jmp	#fetch
+
+'***************************************************************************************************************
+' Fetch an imm8 value at memory (PC++)
+'
+imm8_to_alu
+		movs	rd_opcode_ret, #jmp_vector
+		jmp	#rd_opcode
+
+'***************************************************************************************************************
+' Fetch an imm16 value at memory (PC++)
+'
+imm16_to_alu
+		movs	rd_opword_ret, #jmp_vector
+		jmp	#rd_opword
+
+'***************************************************************************************************************
+' Fetch an imm16 value at memory (PC++) into ea
+'
+imm16_to_ea
+		call	#rd_opword
+		mov	ea, alu
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Read a memory byte (ea) into alu
+'
+rd_byte_ea
+		movs	rd_byte_ret, #jmp_vector
+		jmp	#rd_byte
+
+'***************************************************************************************************************
+' Write alu to a memory byte (ea)
+'
+wr_byte_ea
+		movs	wr_byte_ret, #fetch
+		jmp	#wr_byte
+
+'***************************************************************************************************************
+' Read a memory word (ea), (ea+1) into alu
+'
+rd_word_ea
+		movs	rd_word_ret, #jmp_vector
+		jmp	#rd_word
+
+'***************************************************************************************************************
+' Write alu to a memory word (ea), (ea+1)
+'
+wr_word_ea
+		movs	wr_word_ret, #fetch
+		jmp	#wr_word
+
+'***************************************************************************************************************
+' Test a flag vector[16..9] in the F register
+'
+test_flag_1
+		mov	tmp, vector
+		shr	tmp, #18
+		and	tmp, F		WZ
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+' Test a flag vector[16..9] in the F register
+'
+test_flag_0
+		mov	tmp, vector
+		shr	tmp, #18
+		andn	tmp, F		WZ
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+'
+' Jump relative
+'
+z_jr
+		call	#rd_opcode
+		jmp	#do_jr
+
+'***************************************************************************************************************
+'
+' Decrement B and jump relative if non-zero
+'
+z_djnz
+		sub	B, #1
+		and	B, #$ff		WZ
+
+'***************************************************************************************************************
+'
+' JR if the condition is true
+'
+jr_cond
+		call	#rd_opcode
+	if_z	jmp	#fetch
+
+'***************************************************************************************************************
+'
+' Jump relative
+'
+do_jr
+		shl	alu, #24
+		sar	alu, #24
+		add	PC, alu
+		and	PC, low_word
+		jmp	#fetch
+
+'***************************************************************************************************************
+'
+' JP if the condition is true
+'
+jp_cond
+		call	#rd_opword
+	if_nz	mov	PC, alu
+		jmp	#fetch
+
+'***************************************************************************************************************
+'
+' Increment 16 bit register pair
+'
+inc16
+		add	alu, #1
+		and	alu, low_word
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+'
+' Decrement 16 bit register pair
+'
+dec16
+		sub	alu, #1
+		and	alu, low_word
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+'
+' Compute an 8 bit increment and set the flags
+'
+alu_inc
+		movs	szhv_flags_cmp1, #$00		' compare auxiliary value
+		movs	szhv_flags_cmp2, #$80		' compare overflow value
+		andn	F, #NF				' reset negative flag
+		add	alu, #1
+szhv_flags
+		mov	aux, alu
+		and	aux, #$0f
+szhv_flags_cmp1	cmp	aux, #$00/$0f	WZ		' carry from bit 3 to 4?
+		muxz	F, #HF				' set or clear half carry
+szhv_flags_cmp2	cmp	alu, #$80/$7f	WZ		' overflow to other sign?
+		muxz	F, #VF				' set or clear overflow
+		test	alu, #$80	WC		' bit #7 set?
+		muxc	F, #SF				' set or clear sign
+		and	alu, #$ff	WZ		' result is zero?
+		muxz	F, #ZF				' set or clear zero
+		jmp	#jmp_vector
+
+'***************************************************************************************************************
+'
+' Compute an 8 bit decrement and set the flags
+'
+alu_dec
+		movs	szhv_flags_cmp1, #$0f		' compare auxiliary value
+		movs	szhv_flags_cmp2, #$7f		' compare overflow value
+		or	F, #NF				' set negative flag
+		sub	alu, #1				' decrement alu
+		jmp	#szhv_flags
+
+'***************************************************************************************************************
+'
+' Compute sign, zero, auxiliary, overflow and carry flags after an addition or subtraction
+'
+szhvc_flags
+		xor	aux, tmp			' aux = result ^ operand ^ argument
+		xor	aux, alu
+		test	aux, #HF	WC		' H flag change?
+		muxc	F, #HF
+		test	aux, #$100	WC
+		muxc	F, #(CF | VF)
+		test	aux, #$80	WC
+	if_c	xor	F, #VF
+		and	alu, #$ff	WZ
+		muxz	F, #ZF
+		test	alu, #$80	WC
+		muxc	F, #SF
+szhvc_flags_ret
+		ret
+
+'***************************************************************************************************************
+'
+' Compute rotate left circular and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   h  g  f  e  d  c  b  a           ?
+' after    g  f  e  d  c  b  a  h           h
+'
+alu_rlc
+		shl	alu, #1
+		test	alu, #$100	WC		' get bit #7 into zero flag
+		muxc	alu, #$01			' get carry in bit #0
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute rotate right circular and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   h  g  f  e  d  c  b  a           ?
+' after    a  h  g  f  e  d  c  b           a
+'
+alu_rrc
+		shr	alu, #1		WC
+		muxc	alu, #$80			' set bit #7 from carry
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute rotate left through carry and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   i  h  g  f  e  d  c  b           a
+' after    h  g  f  e  d  c  b  a           i
+'
+alu_rl
+		test	F, #CF		WC		' get current C flag in carry
+		rcl	alu, #1				' alu in bits 8..1, carry in bit 0
+		test	alu, #$100	WC		' test new carry
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute rotate right through carry and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   i  h  g  f  e  d  c  b           a
+' after    a  i  h  g  f  e  d  c           b
+'
+alu_rr
+		test	F, #CF		WZ		' get current C flag in carry
+		shr	alu, #1		WC		' alu in bits 6..0, bit #0 in carry
+		muxnz	alu, #$80			' set bit #7 from former carry
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute shift left arithmetic and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   h  g  f  e  d  c  b  a           ?
+' after    g  f  e  d  c  b  a  0           h
+'
+alu_sla
+		shl	alu, #1				' alu in bits 8..1
+		test	alu, #$100	WC		' test former bit #7
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute shift right arithmetic and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   h  g  f  e  d  c  b  a           ?
+' after    h  h  g  f  e  d  c  b           a
+'
+alu_sra
+		test	alu, #$01	WC
+		shl	alu, #24			' alu in bits 31..24
+		sar	alu, #25			' alu in bits 6..0, bit #0 in carry
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute shift left inverted and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   h  g  f  e  d  c  b  a           ?
+' after    g  f  e  d  c  b  a  1           h
+'
+alu_sli
+		shl	alu, #1				' alu in bits 31..25
+		test	alu, #$100	WC		' test former bit #7
+		or	alu, #$01			' set bit #0
+		jmp	#szp_flags_ff
+
+'***************************************************************************************************************
+'
+' Compute shift right logical and the flags
+'
+'    alu: [7][6][5][4][3][2][1][0]  carry: [0]
+' before   h  g  f  e  d  c  b  a           ?
+' after    0  h  g  f  e  d  c  b           a
+'
+alu_srl
+		shr	alu, #1		WC		' alu in bits 6..0
+	
+'***************************************************************************************************************
+'
+' Compute sign, zero and parity flags after logic/shift/rotate instruction
+'
+szp_flags_ff
+		mov	F, #0				' clear all flags
+		muxc	F, #CF				' set C flag on carry
+		and	alu, #$ff	WZ, WC		' get zero and parity flags
+szp_flags
+		muxz	F, #ZF				' if zero set Z flag
+		muxnc	F, #PF				' if even parity set the P flag
+		test	alu, #$80	WC		' get sign in prop's carry flag
+		muxc	F, #SF				' set S flag
+szp_flags_ret
+szp_flags_ff_ret
+alu_srl_ret
+alu_sli_ret
+alu_sra_ret
+alu_sla_ret
+alu_rr_ret
+alu_rl_ret
+alu_rrc_ret
+alu_rlc_ret
+		ret
+
+
+'***************************************************************************************************************
+'
+' Add tmp to accumulator
+'
+alu_add
+		test	F, #$100	WC		' clear carry
+		jmp	#alu_adc_nc
+
+'***************************************************************************************************************
+'
+' Add tmp with carry to accumulator
+'
+alu_adc
+		test	F, #CF		WC		' get the C flag into carry
+alu_adc_nc
+		mov	tmp, alu			' 2nd operand to tmp
+		mov	F, #0				' clear all flags
+		mov	alu, A
+		mov	aux, A
+		addx	alu, tmp			' add the tmp value with carry
+		movs	szhvc_flags_ret, #alu_to_a
+		jmp	#szhvc_flags
+
+'***************************************************************************************************************
+'
+' Subtract tmp from accumulator
+'
+alu_sub
+		test	F, #$100	WC		' clear carry
+		jmp	#alu_sbc_nc
+
+'***************************************************************************************************************
+'
+' Subtract tmp with carry from accumulator
+'
+alu_sbc
+		test	F, #CF		WC		' get the C flag into carry
+alu_sbc_nc
+		mov	tmp, alu			' 2nd operand to tmp
+		mov	F, #NF				' clear all flags but the N flag
+		mov	alu, A
+		mov	aux, A
+		subx	alu, tmp			' subtract the tmp value with carry
+		movs	szhvc_flags_ret, #alu_to_a
+		jmp	#szhvc_flags
+
+'***************************************************************************************************************
+'
+' Logical and accumulator with tmp
+'
+alu_and
+		mov	tmp, alu			' 2nd operand to tmp
+		mov	F, #HF				' clear all flags but H flag
+		mov	alu, A
+		and	alu, tmp	WZ, WC		' and with the tmp value
+		movs	szp_flags_ret, #alu_to_a
+		jmp	#szp_flags
+
+'***************************************************************************************************************
+'
+' Logical or accumulator with tmp
+'
+' Note: removing the bits in alu from A will turn the following XOR into an OR
+alu_or
+		andn	A, alu
+
+'***************************************************************************************************************
+'
+' Logical exclusive or accumulator with tmp
+'
+alu_xor
+		mov	tmp, alu			' 2nd operand to tmp
+		mov	F, #0				' clear all flags
+		mov	alu, A
+		xor	alu, tmp	WZ, WC		' xor with the tmp value
+		movs	szp_flags_ret, #alu_to_a
+		jmp	#szp_flags
+
+'***************************************************************************************************************
+'
+' Compare accumulator with tmp
+'
+alu_cp
+		mov	tmp, alu			' 2nd operand to tmp
+		mov	F, #NF				' clear all flags but the N flag
+		mov	alu, A
+		mov	aux, A
+		sub	alu, tmp			' subtract the tmp value
+		movs	szhvc_flags_ret, #fetch
+		jmp	#szhvc_flags
+
+'***************************************************************************************************************
+'
+' Compute bit test flags
+'
+alu_bit
+		and	alu, tmp	WZ		' mask bit
+		muxz	F, #ZF				' set Z flag from ~bit
+		test	alu, #$80	WC		' test sign bit
+		muxc	F, #SF				' set S flag depending on carry
+		andn	F, #NF				' clear N flag
+		or	F, #HF				' set H flag
+		jmp	#fetch
+
+'***************************************************************************************************************
+'
+' Execute code in LMM mode
+'
+lmm
+		shr	vector, #9
+		mov	lmm_pc, vector
+lmm_next
+		rdlong	:op1, lmm_pc
+		add	lmm_pc, #4
+:op1		nop
+		rdlong	:op2, lmm_pc
+		add	lmm_pc, #4
+:op2		nop
+		rdlong	:op3, lmm_pc
+		add	lmm_pc, #4
+:op3		nop
+		rdlong	:op4, lmm_pc
+		add	lmm_pc, #4
+:op4		nop
+		jmp	#lmm_next
+lmm_next_ret
+lmm_ret
+		ret
+
+'***************************************************************************************************************
+'***************************************************************************************************************
+
+		fit	$1f0
+
+		org	$1f0
+__par		long	0				' read only
+__cnt		long	0				' read only
+__ina		long	0				' read only
+__inb		long	0				' read only
+opcode							' most recent opcode
+__outa		long	0				' read/write
+alu							' arithmetic logic unit (sort of :)
+__outb		long	0				' read/write
+__dira		long	0				' read/write - leave this alone
+__dirb		long	0				' read/write - leave this alone
+__ctra		long	0				' read/write
+__ctrb		long	0				' read/write
+ea							' effective address
+daa_adj							' adjustment value for DAA
+__frqa		long	0				' read/write
+tmp							' second operand temp
+__frqb		long	0				' read/write
+t1							' temporary 1
+aux							' auxiliary flag temp
+__phsa		long	0				' read/write
+postop							' operation after DD/FD CB disp8 xy
+vector							' opcode vector
+__phsb		long	0				' read/write
+__vcfg		long	0				' read/write - leave this alone
+lmm_pc							' LMM program counter
+__vscl		long	0				' read/write
+
+'***************************************************************************************************************
+'***************************************************************************************************************
+' Don't change the order of the registers unless you also
+' change the order of their cog RAM counterparts and the
+' break function
+C_reg		byte	0
+B_reg		byte	0
+E_reg		byte	0
+D_reg		byte	0
+L_reg		byte	0
+H_reg		byte	0
+F_reg		byte	0
+A_reg		byte	0
+C2_reg		byte	0
+B2_reg		byte	0
+E2_reg		byte	0
+D2_reg		byte	0
+L2_reg		byte	0
+H2_reg		byte	0
+F2_reg		byte	0
+A2_reg		byte	0
+R_reg		byte	0
+R2_reg		byte	0
+IFF_reg		byte	0
+I_reg		byte	0
+IX_reg		word	0
+IY_reg		word	0
+SP_reg		word	0
+PC_reg		word	0
+		byte	0,0,0,0,0,0,0,0
+
+'***************************************************************************************************************
+'
+'	LMM code fragments
+'
+'***************************************************************************************************************
+
+' ----------------------------------------------------------------------------------------------
+' Store all registers in their hub RAM locations
+' and send a break command to the io handler
+'
+break
+		mov	ea, regptr			' destination in hub RAM
+		wrbyte	C, ea
+		add	ea, #1
+		wrbyte	B, ea
+		add	ea, #1
+		wrbyte	E, ea
+		add	ea, #1
+		wrbyte	D, ea
+		add	ea, #1
+		wrbyte	L, ea
+		add	ea, #1
+		wrbyte	H, ea
+		add	ea, #1
+		wrbyte	F, ea
+		add	ea, #1
+		wrbyte	A, ea
+		add	ea, #(@R_reg - @A_reg)		' skip alternate register set
+		wrbyte	R, ea
+		add	ea, #1
+		wrbyte	R2, ea
+		add	ea, #1
+		wrbyte	IFF, ea
+		add	ea, #(@SP_reg - @IFF_reg)
+		wrword	SP, ea
+		add	ea, #2
+		wrword	PC, ea
+		wrlong	io_break, io_command
+:wait		rdlong	t1, io_command
+		shr	t1, #24		WZ, NR
+	if_nz	sub	lmm_pc, #4*($ + 1 - :wait)
+		jmp	#lmm_ret
+
+#ifdef INTERRUPTS
+' ----------------------------------------------------------------------------------------------
+' Handle an interrupt request from an external source
+'
+do_interrupt
+		shl	tmp, #1			WC, NR	' is this an NMI request?
+	if_c	add	lmm_pc, #4*(:nmi - $ - 1)	' LMM jump to the NMI handler
+		test	IFF, #IFF1		WZ	' interrupts enabled?
+	if_z	jmp	lmm_ret				' no, just return
+		andn	IFF, #(IFF1 | IFF2)		' disable further interrupts
+		test	IFF, #HALT		WZ	' CPU is halted?
+	if_nz	andn	IFF, #HALT			' yes, clear HALT flag
+	if_nz	add	PC, #1				' increment PC
+		mov	alu, PC
+		call	#push_alu
+		test	IFF, #IM1		WZ	' interrupt mode 1?
+	if_nz	add	lmm_pc, #4*(:im1 - $ - 1)
+		test	IFF, #IM2		WZ	' interrupt mode 2?
+	if_nz	add	lmm_pc, #4*(:im2 - $ - 1)
+
+:im0		' IM 0: execute opcode on the data bus. We only support CALL and RSTs for now!
+		mov	t1, tmp
+		and	t1, #$ff			' mask first byte
+		cmp	t1, #$cd		WZ	' is it a call command?
+	if_z	shr	tmp, #8				' discard $CD, leave call address in tmp
+	if_nz	and	tmp, #%00111000			' mask restart vector in tmp
+		mov	PC, tmp
+		mov	tmp, #0
+		wrlong	tmp, irq_ptr			' clear the interrupt request
+		jmp	lmm_ret
+
+:im1		' IM 1: execute a RST 38h
+		mov	PC, #$0038			' execute a RST 38h
+		mov	tmp, #0
+		wrlong	tmp, irq_ptr			' clear the interrupt request
+		jmp	lmm_ret
+
+:im2		' IM 2: vectored jump to word[I<<8+databus]
+		mov	XY, regptr
+		add	XY, #(@@@I_reg - @@@C_reg)
+		rdbyte	ea, XY				' get interrupt vector register
+		shl	ea, 8				' * 256
+		and	tmp, #$ff			' mask lower 8 bits of the vector
+		or	ea, tmp
+		call	#rd_word			' fetch the word there
+		mov	PC, alu				' set PC to the vector loaded from the table
+		mov	tmp, #0
+		wrlong	tmp, irq_ptr			' clear the interrupt request
+		jmp	lmm_ret
+:nmi
+		test	IFF, #HALT		WZ	' CPU is halted?
+	if_nz	andn	IFF, #HALT			' yes, clear HALT flag
+	if_nz	add	PC, #1				' increment PC
+		mov	alu, PC
+		call	#push_alu
+		andn	IFF, #IFF1			' clear IFF1 - may be re-enabled by RETN or RETI
+		mov	PC, #$0066			' NMI vector
+		mov	tmp, #0
+		wrlong	tmp, irq_ptr			' clear the interrupt request
+		jmp	lmm_ret
+#endif INTERRUPTS
+
+' ----------------------------------------------------------------------------------------------
+z_ex_af_af2	' 08
+		mov	ea, regptr
+		add	ea, #(@F2_reg - @C_reg)		' offset to F2, A2
+		rdbyte	tmp, ea				' fetch F2
+		wrbyte	F, ea				' write F
+		mov	F, tmp
+		add	ea, #1
+		rdbyte	tmp, ea				' fetch A2
+		wrbyte	A, ea				' write A
+		mov	A, tmp
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_add_hl_bc	' 09
+		mov	t1, C
+		mov	tmp, B
+		andn	F, #NF
+		add	L, t1
+		test	L, #$100	WC
+		and	L, #$ff
+		mov	aux, H
+		addx	H, tmp
+		test	H, #$100	WC
+		muxc	F, #CF
+		and	H, #$ff
+		xor	aux, H
+		xor	aux, tmp
+		test	aux, #HF	WC
+		muxc	F, #HF
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_add_hl_de	' 19
+		mov	t1, E
+		mov	tmp, D
+		andn	F, #NF
+		add	L, t1
+		test	L, #$100	WC
+		and	L, #$ff
+		mov	aux, H
+		addx	H, tmp
+		test	H, #$100	WC
+		muxc	F, #CF
+		and	H, #$ff
+		xor	aux, H
+		xor	aux, tmp
+		test	aux, #HF	WC
+		muxc	F, #HF
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_add_hl_hl	' 29
+		mov	t1, L
+		mov	tmp, H
+		andn	F, #NF
+		add	L, t1
+		test	L, #$100	WC
+		and	L, #$ff
+		mov	aux, H
+		addx	H, tmp
+		test	H, #$100	WC
+		muxc	F, #CF
+		and	H, #$ff
+		xor	aux, H
+		xor	aux, tmp
+		test	aux, #HF	WC
+		muxc	F, #HF
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_add_hl_sp	' 39
+		mov	tmp, SP
+		shr	tmp, #8
+		mov	t1, SP
+		and	t1, #$ff
+		andn	F, #NF
+		add	L, t1
+		test	L, #$100	WC
+		and	L, #$ff
+		mov	aux, H
+		addx	H, tmp
+		test	H, #$100	WC
+		muxc	F, #CF
+		and	H, #$ff
+		xor	aux, H
+		xor	aux, tmp
+		test	aux, #HF	WC
+		muxc	F, #HF
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_rlca		' 07
+		shl	A, #1
+		test	A, #$100	WC		' check carry
+		and	A, #$ff				' keep bits 7..0
+		muxc	A, #$01				' set low bit from carry
+		and	F, #(SF | ZF | PF)		' keep S, Z and P flags
+		muxc	F, #CF				' set C flag from carry
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_rrca		' 0f
+		shr	A, #1		WC		' rotate right and check carry
+		muxc	A, #$80				' set bit #7 from carry flag
+		and	F, #(SF | ZF | PF)		' keep S, Z and P flags
+		muxc	F, #CF				' set C from carry flag
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_rla		' 17
+		shl	A, #1
+		test	A, #$100	WZ		' test bit #7
+		and	A, #$ff				' keep bits 7..0
+		test	F, #CF		WC		' get C flag to carry
+		muxnz	F, #CF				' set C from zero flag
+		muxc	A, #$01				' set bit #0 from previous C flag
+		and	F, #(SF | ZF | PF | CF)		' keep S, Z, P and C flags
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_rra		' 1f
+		shr	A, #1		WC		' rotate right and check carry
+		test	F, #CF		WZ		' get C flag
+		muxc	F, #CF				' set C flag from carry flag
+		muxnz	A, #$80				' set bit #7 from zero flag
+		and	F, #(SF | ZF | PF | CF)		' keep S, Z, P and C flags
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_daa		' 27
+		mov	alu, A
+		mov	tmp, alu
+		mov	aux, alu			' save for auxiliary flag test
+		and	tmp, #15			' isolate low nibble of accumulator
+		mov	daa_adj, #$06			' +$06
+		test	F, #NF		WZ		' test negative flag
+		negnz	daa_adj, daa_adj		' -$06
+		test	F, #HF		WZ
+		cmp	tmp, #$09+1	WC		' aux isn't set; is nibble > $9 ?
+  if_nc_or_nz	add	A, daa_adj			' aux was set or nibble is > $9 => add $06 or -$06
+		shl	daa_adj, #4			' +$60 or -$60
+		test	F, #CF		WZ
+		cmp	alu, #$99+1	WC		' carry isn't set; is data > $99 ?
+  if_nc_or_nz	add	A, daa_adj			' carry was set or data is > $99 => add $60 or -$60
+		and	F, #(NF | CF)			' preserve old CF and NF
+		cmp	alu, #$99+1	WC
+	if_nc	or	F, #CF				' set carry if result > $99
+		xor	aux, A
+		and	aux, #HF	WZ		' if bit #4 of result changed
+		or	F, aux				' set the auxiliary carry flag
+		and	A, #$ff		WZ, WC		' get zero and parity flags
+		muxz	F, #ZF				' set Z on zero
+		muxnc	F, #PF				' clear P on parity
+		test	A, #$80		WZ		' get sign bit #7
+		muxnz	F, #SF				' set S on sign
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_cpl		' 2f
+		xor	A, #$ff
+		or	F, #(HF | NF)			' set the H and N flags
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_scf		' 37
+		or	F, #CF				' set the C flag
+		andn	F, #(HF | NF)			' clear the H and N flags
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ccf		' 3f
+		test	F, #CF		WC		' get the C flag into the carry
+		muxc	F, #HF				' set the H flag if C was set
+		xor	F, #CF				' toggle the C flag
+		andn	F, #NF				' clear N flag
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_halt		' 76
+#ifdef INTERRUPTS
+		sub	PC, #1
+		or	IFF, #HALT			' set CPU halted flag
+		test	IFF, #IFF1	WZ		' IFF1 enabled?
+	if_z	mov	lmm_pc, break_ptr		' no, this is a dead lock!
+		jmp	#fetch
+#else
+		mov	lmm_pc, break_ptr
+		' no jmp, as we are in the LMM loop anyway
+#endif
+
+' ----------------------------------------------------------------------------------------------
+z_cb_xx		' cb
+		call	#rd_opcode
+		mov	opcode, alu			' preserve opcode
+		shl	alu, #1
+		add	alu, table_cb
+		test	opcode, #%11000000	WZ	' first quarter?
+	if_z	rdword	lmm_pc, alu			' yes, dispatch now
+		mov	alu, opcode
+		and	alu, #7
+		test	opcode, #%01000000	WZ
+		test	opcode, #%10000000	WC
+		add	alu, #$40
+	if_c	add	alu, #$08
+ if_c_and_nz	add	alu, #$08
+		shl	alu, #1
+		add	alu, table_cb
+		shr	opcode, #3			' bit number to 2..0
+		and	opcode, #7			' mask bit number
+		mov	tmp, #1
+		shl	tmp, opcode			' make bit mask for BIT/RES/SET
+		rdword	lmm_pc, alu
+
+' ----------------------------------------------------------------------------------------------
+z_exx		' d9
+		mov	ea, regptr
+
+		add	ea, #(@C2_reg - @C_reg)		' offset to C2
+		rdbyte	alu, ea
+		wrbyte	C, ea
+		mov	C, alu
+
+		add	ea, #1
+		rdbyte	alu, ea
+		wrbyte	B, ea
+		mov	B, alu
+
+		add	ea, #1
+		rdbyte	alu, ea
+		wrbyte	E, ea
+		mov	E, alu
+
+		add	ea, #1
+		rdbyte	alu, ea
+		wrbyte	D, ea
+		mov	D, alu
+
+		add	ea, #1
+		rdbyte	alu, ea
+		wrbyte	L, ea
+		mov	L, alu
+
+		add	ea, #1
+		rdbyte	alu, ea
+		wrbyte	H, ea
+		mov	H, alu
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ex_sp_hl	' e3
+		mov	tmp, H
+		shl	tmp, #8
+		or	tmp, L
+		mov	ea, SP
+		call	#rd_word
+		xor	alu, tmp
+		xor	tmp, alu
+		xor	alu, tmp
+		mov	ea, SP
+		call	#wr_word
+		mov	L, tmp
+		and	L, #$ff
+		mov	H, tmp
+		shr	H, #8
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ex_de_hl	' eb
+		xor	L, E
+		xor	E, L
+		xor	L, E
+		xor	H, D
+		xor	D, H
+		xor	H, D
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_dd_xx		' dd
+		mov	XY, regptr
+		add	XY, #(@@@IX_reg - @@@C_reg)
+		mov	HXY, LXY
+		add	HXY, #1
+		call	#rd_opcode
+		mov	opcode, alu
+		cmp	alu, #$cb		WZ
+	if_z	add	lmm_pc, #4*(z_xy_cb - $ - 1)
+		shl	alu, #2
+		add	alu, table_xy
+		jmp	#fetch_1
+
+' ----------------------------------------------------------------------------------------------
+z_ed_xx		' ed
+		call	#rd_opcode
+		cmp	alu, #$40		WZ, WC
+	if_b	jmp	#fetch
+		cmp	alu, #$c0		WZ, WC
+	if_ae	jmp	#fetch
+		sub	alu, #$40
+		shl	alu, #1
+		add	alu, table_ed
+		rdword	lmm_pc, alu
+		' no jmp, as we are in the LMM loop anyway
+
+' ----------------------------------------------------------------------------------------------
+z_fd_xx		' fd
+		mov	XY, regptr
+		add	XY, #(@@@IY_reg - @@@C_reg)
+		mov	HXY, LXY
+		add	HXY, #1
+		call	#rd_opcode
+		mov	opcode, alu
+		cmp	alu, #$cb		WZ
+	if_z	add	lmm_pc, #4*(z_xy_cb - $ - 1)
+		shl	alu, #2
+		add	alu, table_xy
+		jmp	#fetch_1
+
+' ----------------------------------------------------------------------------------------------
+z_xy_cb		' dd/fd cb disp8 xx
+		call	#mxy
+		mov	tmp, ea				' save effective address
+		call	#rd_opcode			' read 4th opcode byte
+		mov	ea, tmp
+		mov	opcode, alu
+		mov	postop, alu			' additional operation after the write back
+		and	postop, #7			' 1 of 8
+		shl	postop, #1			' * 2
+		add	postop, postop_ptr		' one of the post operations
+		rdword	postop, postop
+		mov	aux, opcode
+		shr	aux, #3				' discard lower three bits
+		shl	aux, #1				' * 2
+		add	aux, table_xy_cb		' dispatch table offset
+		call	#rd_byte			' get memory operand in alu
+		rdword	lmm_pc, aux			' fetch the new LMM program counter
+
+
+' ----------------------------------------------------------------------------------------------
+z_di		' f3
+		andn	IFF, #(IFF1 | IFF2)
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ei		' fb
+		or	IFF, #(IFF1 | IFF2)
+#ifdef INTERRUPTS
+		jmp	#fetch_0
+#else
+		jmp	#fetch
+#endif
+'******************************************************************************
+'
+'		OPCODES CB xx
+'
+'******************************************************************************
+' ----------------------------------------------------------------------------------------------
+z_rlc_b		' cb 00
+		mov	alu, B
+		call	#alu_rlc
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_rlc_c		' cb 01
+		mov	alu, C
+		call	#alu_rlc
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_rlc_d		' cb 02
+		mov	alu, D
+		call	#alu_rlc
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_rlc_e		' cb 03
+		mov	alu, E
+		call	#alu_rlc
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_rlc_h		' cb 04
+		mov	alu, H
+		call	#alu_rlc
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_rlc_l		' cb 05
+		mov	alu, L
+		call	#alu_rlc
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_rlc_m		' cb 06
+		call	#rd_byte_hl
+		call	#alu_rlc
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_rlc_a		' cb 07
+		mov	alu, A
+		call	#alu_rlc
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_rrc_b		' cb 08
+		mov	alu, B
+		call	#alu_rrc
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_rrc_c		' cb 09
+		mov	alu, C
+		call	#alu_rrc
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_rrc_d		' cb 0a
+		mov	alu, D
+		call	#alu_rrc
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_rrc_e		' cb 0b
+		mov	alu, E
+		call	#alu_rrc
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_rrc_h		' cb 0c
+		mov	alu, H
+		call	#alu_rrc
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_rrc_l		' cb 0d
+		mov	alu, L
+		call	#alu_rrc
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_rrc_m		' cb 0e
+		call	#rd_byte_hl
+		call	#alu_rrc
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_rrc_a		' cb 0f
+		mov	alu, A
+		call	#alu_rrc
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_rl_b		' cb 10
+		mov	alu, B
+		call	#alu_rl
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_rl_c		' cb 11
+		mov	alu, C
+		call	#alu_rl
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_rl_d		' cb 12
+		mov	alu, D
+		call	#alu_rl
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_rl_e		' cb 13
+		mov	alu, E
+		call	#alu_rl
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_rl_h		' cb 14
+		mov	alu, H
+		call	#alu_rl
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_rl_l		' cb 15
+		mov	alu, L
+		call	#alu_rl
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_rl_m		' cb 16
+		call	#rd_byte_hl
+		call	#alu_rl
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_rl_a		' cb 17
+		mov	alu, A
+		call	#alu_rl
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_rr_b		' cb 18
+		mov	alu, B
+		call	#alu_rr
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_rr_c		' cb 19
+		mov	alu, C
+		call	#alu_rr
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_rr_d		' cb 1a
+		mov	alu, D
+		call	#alu_rr
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_rr_e		' cb 1b
+		mov	alu, E
+		call	#alu_rr
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_rr_h		' cb 1c
+		mov	alu, H
+		call	#alu_rr
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_rr_l		' cb 1d
+		mov	alu, L
+		call	#alu_rr
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_rr_m		' cb 1e
+		call	#rd_byte_hl
+		call	#alu_rr
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_rr_a		' cb 1f
+		mov	alu, A
+		call	#alu_rr
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_sla_b		' cb 20
+		mov	alu, B
+		call	#alu_sla
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_sla_c		' cb 21
+		mov	alu, C
+		call	#alu_sla
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_sla_d		' cb 22
+		mov	alu, D
+		call	#alu_sla
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_sla_e		' cb 23
+		mov	alu, E
+		call	#alu_sla
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_sla_h		' cb 24
+		mov	alu, H
+		call	#alu_sla
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_sla_l		' cb 25
+		mov	alu, L
+		call	#alu_sla
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_sla_m		' cb 26
+		call	#rd_byte_hl
+		call	#alu_sla
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_sla_a		' cb 27
+		mov	alu, A
+		call	#alu_sla
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_sra_b		' cb 28
+		mov	alu, B
+		call	#alu_sra
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_sra_c		' cb 29
+		mov	alu, C
+		call	#alu_sra
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_sra_d		' cb 2a
+		mov	alu, D
+		call	#alu_sra
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_sra_e		' cb 2b
+		mov	alu, E
+		call	#alu_sra
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_sra_h		' cb 2c
+		mov	alu, H
+		call	#alu_sra
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_sra_l		' cb 2d
+		mov	alu, L
+		call	#alu_sra
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_sra_m		' cb 2e
+		call	#rd_byte_hl
+		call	#alu_sra
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_sra_a		' cb 2f
+		mov	alu, A
+		call	#alu_sra
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_sli_b		' cb 30
+		mov	alu, B
+		call	#alu_sli
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_sli_c		' cb 31
+		mov	alu, C
+		call	#alu_sli
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_sli_d		' cb 32
+		mov	alu, D
+		call	#alu_sli
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_sli_e		' cb 33
+		mov	alu, E
+		call	#alu_sli
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_sli_h		' cb 34
+		mov	alu, H
+		call	#alu_sli
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_sli_l		' cb 35
+		mov	alu, L
+		call	#alu_sli
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_sli_m		' cb 36
+		call	#rd_byte_hl
+		call	#alu_sli
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_sli_a		' cb 37
+		mov	alu, A
+		call	#alu_sli
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_srl_b		' cb 38
+		mov	alu, B
+		call	#alu_srl
+		jmp	#alu_to_B
+' ----------------------------------------------------------------------------------------------
+z_srl_c		' cb 39
+		mov	alu, C
+		call	#alu_srl
+		jmp	#alu_to_C
+' ----------------------------------------------------------------------------------------------
+z_srl_d		' cb 3a
+		mov	alu, D
+		call	#alu_srl
+		jmp	#alu_to_D
+' ----------------------------------------------------------------------------------------------
+z_srl_e		' cb 3b
+		mov	alu, E
+		call	#alu_srl
+		jmp	#alu_to_E
+' ----------------------------------------------------------------------------------------------
+z_srl_h		' cb 3c
+		mov	alu, H
+		call	#alu_srl
+		jmp	#alu_to_H
+' ----------------------------------------------------------------------------------------------
+z_srl_l		' cb 3d
+		mov	alu, L
+		call	#alu_srl
+		jmp	#alu_to_L
+' ----------------------------------------------------------------------------------------------
+z_srl_m		' cb 3e
+		call	#rd_byte_hl
+		call	#alu_srl
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_srl_a		' cb 3f
+		mov	alu, A
+		call	#alu_srl
+		jmp	#alu_to_A
+
+' ----------------------------------------------------------------------------------------------
+z_bit_n_b	' cb 40/48/50/58/60/68/70/78
+		mov	alu, B
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_c	' cb 41/49/50/59/61/69/71/79
+		mov	alu, C
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_d	' cb 42/4a/52/5a/62/6a/72/7a
+		mov	alu, D
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_e	' cb 43/4b/53/5b/63/6b/73/7b
+		mov	alu, E
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_h	' cb 44/4c/54/5c/64/6c/74/7c
+		mov	alu, H
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_l	' cb 45/4d/55/5d/65/6d/75/7d
+		mov	alu, L
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_m	' cb 46/4e/56/5e/66/6e/76/7e
+		call	#rd_byte_hl
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_n_a	' cb 47/4f/57/5f/67/6f/77/7f
+		mov	alu, A
+		jmp	#alu_bit
+
+' ----------------------------------------------------------------------------------------------
+z_res_n_b	' cb 80/88/90/98/a0/a8/b0/b8
+		andn	B, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_res_n_c	' cb 81/89/91/99/a1/a9/b1/b9
+		andn	C, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_res_n_d	' cb 82/8a/92/9a/a2/aa/b2/ba
+		andn	D, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_res_n_e	' cb 83/8b/93/9b/a3/ab/b3/bb
+		andn	E, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_res_n_h	' cb 84/8c/94/9c/a4/ac/b4/bc
+		andn	H, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_res_n_l	' cb 85/8d/95/9d/a5/ad/b5/bd
+		andn	L, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_res_n_m	' cb 86/8e/96/9e/a6/ae/b6/be
+		call	#rd_byte_hl
+		andn	alu, tmp
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_res_n_a	' cb 87/8f/97/9f/a7/af/b7/bf
+		andn	A, tmp
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_set_n_b	' cb c0/c8/d0/d8/e0/e8/f0/f8
+		or	B, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_set_n_c	' cb c1/c9/d1/d9/e1/e9/f1/f9
+		or	C, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_set_n_d	' cb c2/ca/d2/da/e2/ea/f2/fa
+		or	D, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_set_n_e	' cb c3/cb/d3/db/e3/eb/f3/fb
+		or	E, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_set_n_h	' cb c4/cc/d4/dc/e4/ec/f4/fc
+		or	H, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_set_n_l	' cb c5/cd/d5/dd/e5/ed/f5/fd
+		or	L, tmp
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_set_n_m	' cb c6/ce/d6/de/e6/ee/f6/fe
+		call	#rd_byte_hl
+		or	alu, tmp
+		jmp	#alu_to_m
+' ----------------------------------------------------------------------------------------------
+z_set_n_a	' cb c7/cf/d7/df/e7/ef/f7/ff
+		or	A, tmp
+		jmp	#fetch
+
+'******************************************************************************
+'
+'		OPCODES ED xx
+'
+'******************************************************************************
+' ----------------------------------------------------------------------------------------------
+z_in_b_bc	' ed 40
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_b
+
+' ----------------------------------------------------------------------------------------------
+z_in_c_bc	' ed 48
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_c
+
+' ----------------------------------------------------------------------------------------------
+z_in_d_bc	' ed 50
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_d
+
+' ----------------------------------------------------------------------------------------------
+z_in_e_bc	' ed 58
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_e
+
+' ----------------------------------------------------------------------------------------------
+z_in_h_bc	' ed 60
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_in_l_bc	' ed 68
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_l
+
+' ----------------------------------------------------------------------------------------------
+z_in_0_bc	' ed 70
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_in_a_bc	' ed 78
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		jmp	#alu_to_a
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_b	' ed 41
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, B
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_c	' ed 49
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, C
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_d	' ed 51
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, D
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_e	' ed 59
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, E
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_h	' ed 61
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, H
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_l	' ed 69
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, L
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_0	' ed 71
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, #0
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_out_bc_a	' ed 79
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		mov	alu, A
+		call	#wr_port
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_sbc_hl_bc	' ed 42
+		mov	t1, C
+		mov	tmp, B
+		test	F, #CF		WC		' get C into prop's carry
+		subx	L, t1				' subtract the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #NF				' clear all flags but N flag for SBC
+		mov	alu, H
+		mov	aux, H
+		subx	alu, tmp			' subtract the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_sbc_hl_de	' ed 52
+		mov	t1, E
+		mov	tmp, D
+		test	F, #CF		WC		' get C into prop's carry
+		subx	L, t1				' subtract the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #NF				' clear all flags but N flag for SBC
+		mov	alu, H
+		mov	aux, H
+		subx	alu, tmp			' subtract the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_sbc_hl_hl	' ed 62
+		mov	t1, L
+		mov	tmp, H
+		test	F, #CF		WC		' get C into prop's carry
+		subx	L, t1				' subtract the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #NF				' clear all flags but N flag for SBC
+		mov	alu, H
+		mov	aux, H
+		subx	alu, tmp			' subtract the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_sbc_hl_sp	' ed 72
+		mov	t1, SP
+		and	t1, #$ff
+		mov	tmp, SP
+		shr	tmp, #8
+		test	F, #CF		WC		' get C into prop's carry
+		subx	L, t1				' subtract the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #NF				' clear all flags but N flag for SBC
+		mov	alu, H
+		mov	aux, H
+		subx	alu, tmp			' subtract the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_adc_hl_bc	' ed 4a
+		mov	t1, C
+		mov	tmp, B
+		test	F, #CF		WC		' get C into prop's carry
+		addx	L, t1				' add the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #0				' clear all flags
+		mov	alu, H
+		mov	aux, H
+		addx	alu, tmp			' add the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_adc_hl_de	' ed 5a
+		mov	t1, E
+		mov	tmp, D
+		test	F, #CF		WC		' get C into prop's carry
+		addx	L, t1				' add the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #0				' clear all flags
+		mov	alu, H
+		mov	aux, H
+		addx	alu, tmp			' add the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_adc_hl_hl	' ed 6a
+		mov	t1, L
+		mov	tmp, H
+		test	F, #CF		WC		' get C into prop's carry
+		addx	L, t1				' add the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #0				' clear all flags
+		mov	alu, H
+		mov	aux, H
+		addx	alu, tmp			' add the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_adc_hl_sp	' ed 7a
+		mov	t1, SP
+		and	t1, #$ff
+		mov	tmp, SP
+		shr	tmp, #8
+		test	F, #CF		WC		' get C into prop's carry
+		addx	L, t1				' add the LSB tmp value with carry
+		test	L, #$100	WC		' get LSB carry
+		and	L, #$ff
+		mov	F, #0				' clear all flags
+		mov	alu, H
+		mov	aux, H
+		addx	alu, tmp			' add the MSB tmp value with carry
+		call	#szhvc_flags
+	if_z	cmp	L, #0		WZ
+	if_nz	andn	F, #ZF				' clear Z flag if L is non zero
+		jmp	#alu_to_h
+
+' ----------------------------------------------------------------------------------------------
+z_ld_abs16_bc	' ed 43
+		call	#rd_opword
+		mov	ea, alu
+		mov	alu, B
+		shl	alu, #8
+		or	alu, C
+		call	#wr_word
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_abs16_de	' ed 53
+		call	#rd_opword
+		mov	ea, alu
+		mov	alu, D
+		shl	alu, #8
+		or	alu, E
+		call	#wr_word
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_abs16_hl_2	' ed 63
+		call	#rd_opword
+		mov	ea, alu
+		mov	alu, H
+		shl	alu, #8
+		or	alu, L
+		call	#wr_word
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_abs16_sp	' ed 73
+		call	#rd_opword
+		mov	ea, alu
+		mov	alu, SP
+		call	#wr_word
+		jmp	#fetch
+
+
+' ----------------------------------------------------------------------------------------------
+z_ld_bc_abs16	' ed 4b
+		call	#rd_opword
+		mov	ea, alu
+		call	#rd_word
+		jmp	#alu_to_bc
+
+' ----------------------------------------------------------------------------------------------
+z_ld_de_abs16	' ed 5b
+		call	#rd_opword
+		mov	ea, alu
+		call	#rd_word
+		jmp	#alu_to_de
+
+' ----------------------------------------------------------------------------------------------
+z_ld_hl_abs16_2	' ed 6b
+		call	#rd_opword
+		mov	ea, alu
+		call	#rd_word
+		jmp	#alu_to_hl
+
+' ----------------------------------------------------------------------------------------------
+z_ld_sp_abs16	' ed 7b
+		call	#rd_opword
+		mov	ea, alu
+		call	#rd_word
+		jmp	#alu_to_sp
+
+' ----------------------------------------------------------------------------------------------
+z_neg		' ed 44/4c/54/5c/64/6c/74/7c
+		mov	tmp, A
+		mov	F, #NF				' clear all flags but the N flag
+		mov	alu, #0
+		mov	aux, #0
+		sub	alu, tmp			' subtract the tmp value
+		call	#szhvc_flags
+		jmp	#alu_to_a
+
+' ----------------------------------------------------------------------------------------------
+z_retn		' ed 45/55/65/75
+		test	IFF, #IFF2		WZ	' copy interrupt flip-flop #2
+		muxnz	IFF, #IFF1			' to #1
+		jmp	#do_ret
+
+' ----------------------------------------------------------------------------------------------
+z_reti		' ed 4d/5d/6d/7d
+		test	IFF, #IFF2		WZ	' copy interrupt flip-flop #2
+		muxnz	IFF, #IFF1			' to #1
+		' TODO: call Z80 SIO, PIO, other daisy chain peripherals
+		jmp	#do_ret
+
+' ----------------------------------------------------------------------------------------------
+z_im_0		' ed 46/4e/66/6e
+		andn	IFF, #(IM1 | IM2)
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_im_1		' ed 56/76
+		andn	IFF, #IM2
+		or	IFF, #IM1
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_im_2		' ed 5e/7e
+		andn	IFF, #IM1
+		or	IFF, #IM2
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_i_a	' ed 47
+		mov	XY, regptr
+		add	XY, #(@@@I_reg - @@@C_reg)
+		wrbyte	A, XY
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_r_a	' ed 4f
+		mov	R, A
+		mov	R2, A
+		and	R2, #$80
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_a_i	' ed 57
+		mov	XY, regptr
+		add	XY, #(@@@I_reg - @@@C_reg)
+		rdbyte	A, XY
+		test	IFF, #IFF2		WZ	' copy interrupt flip-flop #2
+		muxnz	F, #PF				' to parity flag
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ld_a_r	' ed 5f
+		mov	A, R				' get current counter
+		and	A, #$7f				' mask lower 7 bits
+		or	A, R2				' combine with bit #7 from last write
+		test	IFF, #IFF2		WZ	' copy interrupt flip-flop #2
+		muxnz	F, #PF				' to parity flag
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_rrd_m		' ed 67
+' ed 67 Rotate right digit memory (HL)
+'
+' A:[7][6][5][4][3][2][1][0] M:[7][6][5][4][3][2][1][0]
+' before         x  x  x  x     y  y  y  y  z  z  z  z
+' after          z  z  z  z     x  x  x  x  y  y  y  y
+'
+		call	#rd_byte_hl
+		mov	tmp, alu
+		shr	tmp, #4				' upper nibble to 3..0
+		mov	aux, A
+		shl	aux, #4				' A to bits 11..4
+		and	aux, #$f0			' mask bits 7..4
+		or	tmp, aux			' combine with lower nibble
+		and	alu, #$0f			' mask 3..0 of memory
+		andn	A, #%0000_1111			' clears bits 3..0 in accu
+		or	A, alu				' combine with accu
+		mov	alu, tmp			' write back memory
+		call	#wr_byte
+		and	F, #CF				' keep C flag
+		and	A, #$ff		WZ, WC		' get zero and parity
+		muxz	F, #ZF				' set Z flag on zero
+		muxnc	F, #PF				' clear P flag on parity
+		test	A, #$80		WZ		' get sign
+		muxnz	F, #SF				' set S flag on sign
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_rld_m		' ed 6f
+' ed 6f Rotate left digit memory (HL)
+'
+' A:[7][6][5][4][3][2][1][0] M:[7][6][5][4][3][2][1][0]
+' before         x  x  x  x     y  y  y  y  z  z  z  z
+' after          y  y  y  y     z  z  z  z  x  x  x  x
+'
+		call	#rd_byte_hl
+		mov	tmp, alu
+		shl	tmp, #4				' mem to bits 11..4
+		mov	aux, A
+		and	aux, #$0f			' mask bits 3..0 of accu
+		or	tmp, aux			' combine with upper nibble
+		shr	alu, #4				' mem upper nibble to 3..0
+		andn	A, #%0000_1111			' clear bits 3..0 in accu
+		or	A, alu				' combine with accu
+		mov	alu, tmp			' write back memory
+		and	alu, #$ff			' needed?
+		call	#wr_byte
+		and	F, #CF				' keep C flag
+		and	A, #$ff		WZ, WC		' get zero and parity
+		muxz	F, #ZF				' set Z flag on zero
+		muxnc	F, #PF				' clear P flag on parity
+		test	A, #$80		WZ		' get sign
+		muxnz	F, #SF				' set S flag on sign
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_bcde_cnt	' ed 80
+		mov	t1, CNT
+		mov	E, t1
+		and	E, #$ff
+		ror	t1, #8
+		mov	D, t1
+		and	D, #$ff
+		ror	t1, #8
+		mov	C, t1
+		and	C, #$ff
+		ror	t1, #8
+		mov	B, t1
+		and	B, #$ff
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ldi		' ed a0
+		call	#rd_byte_hl
+		add	L, #1				' HL++
+		test	L, #$100	WC
+		and	L, #$ff
+		addx	H, #0
+		and	H, #$ff
+		mov	ea, D
+		shl	ea, #8
+		or	ea, E
+		call	#wr_byte
+		add	E, #1				' DE++
+		test	E, #$100	WC
+		and	E, #$ff
+		addx	D, #0
+		and	D, #$ff
+		sub	C, #1				' BC--
+		test	C, #$100	WC
+		and	C, #$ff		WZ
+		subx	B, #0
+	if_nz	and	B, #$ff
+	if_z	and	B, #$ff		WZ
+		and	F, #(SF | ZF | CF)
+	if_nz	or	F, #PF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_ldd		' ed a8
+		call	#rd_byte_hl
+		sub	L, #1				' HL--
+		test	L, #$100	WC
+		and	L, #$ff
+		subx	H, #0
+		and	H, #$ff
+		mov	ea, D
+		shl	ea, #8
+		or	ea, E
+		call	#wr_byte
+		sub	E, #1				' DE--
+		test	E, #$100	WC
+		and	E, #$ff
+		subx	D, #0
+		and	D, #$ff
+		sub	C, #1				' BC--
+		test	C, #$100	WC
+		and	C, #$ff		WZ
+		subx	B, #0
+	if_nz	and	B, #$ff
+	if_z	and	B, #$ff		WZ
+		and	F, #(SF | ZF | CF)
+	if_nz	or	F, #PF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_ldir		' ed b0
+		shl	H, #8				' pack HL
+		or	H, L
+		shl	D, #8				' pack DE
+		or	D, E
+		shl	B, #8				' pack BC
+		or	B, C
+:loop		mov	ea, H
+		call	#rd_byte
+		add	H, #1				' HL++
+		and	H, low_word
+		mov	ea, D
+		call	#wr_byte
+		add	D, #1				' DE++
+		and	D, low_word
+		sub	B, #1				' BC--
+		and	B, low_word	WZ
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)
+		mov	C, #0				' BC is 0
+		mov	E, D				' unpack D E
+		and	E, #$ff
+		shr	D, #8
+		mov	L, H				' unpack H L
+		and	L, #$ff
+		shr	H, #8
+		and	F, #(SF | ZF | CF)
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_lddr		' ed b8
+		shl	H, #8				' pack HL
+		or	H, L
+		shl	D, #8				' pack DE
+		or	D, E
+		shl	B, #8				' pack BC
+		or	B, C
+:loop		mov	ea, H
+		call	#rd_byte
+		sub	H, #1				' HL--
+		and	H, low_word
+		mov	ea, D
+		call	#wr_byte
+		sub	D, #1				' DE--
+		and	D, low_word
+		sub	B, #1				' BC--
+		and	B, low_word	WZ
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)
+		mov	C, #0				' BC is 0
+		mov	E, D				' unpack D E
+		and	E, #$ff
+		shr	D, #8
+		mov	L, H				' unpack H L
+		and	L, #$ff
+		shr	H, #8
+		and	F, #(SF | ZF | CF)
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_cpi		' ed a1
+		call	#rd_byte_hl
+		mov	tmp, alu
+		and	F, #CF				' keep carry flag
+		or	F, #NF				' always set negative flag
+		mov	alu, A
+		mov     aux, alu			' keep a copy in aux for later
+		sub     alu, tmp	WZ
+		muxz    F, #ZF				' set zero flag if SUB was zero
+		xor     aux, alu
+		xor     aux, tmp
+		and     aux, #HF			' mask the auxiliary flag
+		or      F, aux
+		test    alu, #$80	WZ
+		muxnz   F, #SF				' set sign flag if alu bit #7 is set
+		add	L, #1				' HL++
+		test	L, #$100	WC
+		and	L, #$ff
+		addx	H, #0
+		and	H, #$ff
+		sub	C, #1				' BC--
+		test	C, #$100	WC
+		and	C, #$ff		WZ
+		subx	B, #0
+	if_nz	and	B, #$ff
+	if_z	and	B, #$ff		WZ
+		muxnz   F, #PF				' set parity flag if BC was non zero
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_cpd		' ed a9
+		call	#rd_byte_hl
+		mov	tmp, alu
+		and	F, #CF				' keep carry flag
+		or	F, #NF				' always set negative flag
+		mov	alu, A
+		mov     aux, alu			' keep a copy in aux for later
+		sub     alu, tmp	WZ
+		muxz    F, #ZF				' set zero flag if SUB was zero
+		xor     aux, alu
+		xor     aux, tmp
+		and     aux, #HF			' mask the auxiliary flag
+		or      F, aux
+		test    alu, #$80	WZ
+		muxnz   F, #SF				' set sign flag if alu bit #7 is set
+		sub	L, #1				' HL--
+		test	L, #$100	WC
+		and	L, #$ff
+		subx	H, #0
+		and	H, #$ff
+		sub	C, #1				' BC--
+		test	C, #$100	WC
+		and	C, #$ff		WZ
+		subx	B, #0
+	if_nz	and	B, #$ff
+	if_z	and	B, #$ff		WZ
+		muxnz   F, #PF				' set parity flag if BC was non zero
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_cpir		' ed b1
+		shl	H, #8				' pack HL
+		or	H, L
+		shl	B, #8				' pack BC
+		or	B, C
+:loop		mov	ea, H
+		call	#rd_byte
+		add	H, #1				' HL++
+		and	H, low_word
+		sub	B, #1				' BC--
+		and	B, low_word	WZ
+	if_nz	mov	tmp, A
+	if_nz	sub	tmp, alu	WZ
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)	' until alu == A or BC == 0
+		mov	C, B		WZ		' unpack BC
+		and	C, #$ff
+		shr	B, #8
+		mov	L, H				' unpack HL
+		and	L, #$ff
+		shr	H, #8
+		and	F, #CF				' keep carry flag
+		or	F, #NF				' always set negative flag
+	if_nz	or	F, #PF				' set parity flag if BC <> 0
+		mov	tmp, alu
+		mov	alu, A
+		mov     aux, alu			' keep a copy in aux for later
+		sub     alu, tmp	WZ
+		muxz    F, #ZF				' set zero flag if SUB was zero
+		xor     aux, alu
+		xor     aux, tmp
+		and     aux, #HF			' mask the auxiliary flag
+		or      F, aux
+		test    alu, #$80	WZ
+		muxnz   F, #SF				' set sign flag if alu bit #7 is set
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_cpdr		' ed b9
+		shl	H, #8				' pack HL
+		or	H, L
+		shl	B, #8				' pack BC
+		or	B, C
+:loop		mov	ea, H
+		call	#rd_byte
+		sub	H, #1				' HL--
+		and	H, low_word
+		sub	B, #1				' BC--
+		and	B, low_word	WZ
+	if_nz	mov	tmp, A
+	if_nz	sub	tmp, alu	WZ
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)	' until alu == A or BC == 0
+		mov	C, B		WZ		' unpack BC
+		and	C, #$ff
+		shr	B, #8
+		mov	L, H				' unpack HL
+		and	L, #$ff
+		shr	H, #8
+		and	F, #CF				' keep carry flag
+		or	F, #NF				' always set negative flag
+	if_nz	or	F, #PF				' set parity flag if BC <> 0
+		mov	tmp, alu			' tmp = (HL)
+		mov	alu, A
+		mov     aux, alu			' keep a copy in aux for later
+		sub     alu, tmp	WZ
+		muxz    F, #ZF				' set zero flag if SUB was zero
+		xor     aux, alu
+		xor     aux, tmp
+		and     aux, #HF			' mask the auxiliary flag
+		or      F, aux
+		test    alu, #$80	WZ
+		muxnz   F, #SF				' set sign flag if alu bit #7 is set
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_ini		' ed a2
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		call	#wr_byte
+		add	L, #1				' HL++
+		test	L, #$100	WC
+		and	L, #$ff
+		addx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+		muxz	F, #ZF
+		test	B, #$80		WC
+		muxc	F, #SF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_ind		' ed aa
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		call	#wr_byte
+		sub	L, #1				' HL--
+		test	L, #$100	WC
+		and	L, #$ff
+		subx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+		muxz	F, #ZF
+		test	B, #$80		WC
+		muxc	F, #SF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_inir		' ed b2
+:loop
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		call	#wr_byte
+		add	L, #1				' HL++
+		test	L, #$100	WC
+		and	L, #$ff
+		addx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)
+		andn	F, #SF
+		or	F, #ZF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_indr		' ed ba
+:loop
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#rd_port
+		mov	ea, H
+		shl	ea, #8
+		or	ea, L
+		call	#wr_byte
+		sub	L, #1				' HL--
+		test	L, #$100	WC
+		and	L, #$ff
+		subx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)
+		andn	F, #SF
+		or	F, #ZF
+		jmp	#fetch
+
+' ----------------------------------------------------------------------------------------------
+z_outi		' ed a3
+		call	#rd_byte_hl
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#wr_port
+		add	L, #1				' HL++
+		test	L, #$100	WC
+		and	L, #$ff
+		addx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+		muxz	F, #ZF
+		test	B, #$80		WC
+		muxc	F, #SF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_outd		' ed ab
+		call	#rd_byte_hl
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#wr_port
+		sub	L, #1				' HL--
+		test	L, #$100	WC
+		and	L, #$ff
+		subx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+		muxz	F, #ZF
+		test	B, #$80		WC
+		muxc	F, #SF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_otir		' ed b3
+:loop
+		call	#rd_byte_hl
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#wr_port
+		add	L, #1				' HL++
+		test	L, #$100	WC
+		and	L, #$ff
+		addx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)
+		andn	F, #SF
+		or	F, #ZF
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_otdr		' ed bb
+:loop
+		call	#rd_byte_hl
+#ifdef PORT16
+		mov	ea, B
+		shl	ea, #8
+		or	ea, C
+#else
+		mov	ea, C
+#endif
+		call	#wr_port
+		sub	L, #1				' HL--
+		test	L, #$100	WC
+		and	L, #$ff
+		subx	H, #0
+		and	H, #$ff
+		sub	B, #1		WZ		' B--
+	if_nz	sub	lmm_pc, #4*($ + 1 - :loop)
+		andn	F, #SF
+		or	F, #ZF
+		jmp	#fetch
+
+'******************************************************************************
+'
+'		OPCODES DD/FD
+'
+'******************************************************************************
+' ----------------------------------------------------------------------------------------------
+z_add_xy_bc	' dd/fd 09
+		mov	tmp, B
+		shl	tmp, #8
+		or	tmp, C
+		rdword	alu, XY
+		mov	aux, alu
+		add	alu, tmp
+		xor	aux, alu
+		xor	aux, tmp
+		shr	aux, #8				' get MSB to LSB
+		test	aux, #HF	WC		' carry from bit 11 to bit 12?
+		muxc	F, #HF
+		test	aux, #$100	WC		' carry from bit 15 to bit 16?
+		muxc	F, #CF
+		andn	F, #NF				' always clear negative flag
+		wrword	alu, XY
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_add_xy_de	' dd/fd 19
+		mov	tmp, D
+		shl	tmp, #8
+		or	tmp, E
+		rdword	alu, XY
+		mov	aux, alu
+		add	alu, tmp
+		xor	aux, alu
+		xor	aux, tmp
+		shr	aux, #8				' get MSB to LSB
+		test	aux, #HF	WC		' carry from bit 11 to bit 12?
+		muxc	F, #HF
+		test	aux, #$100	WC		' carry from bit 15 to bit 16?
+		muxc	F, #CF
+		andn	F, #NF				' always clear negative flag
+		wrword	alu, XY
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_add_xy_xy	' dd/fd 29
+		rdword	alu, XY
+		mov	tmp, alu
+		mov	aux, alu
+		add	alu, tmp
+		xor	aux, alu
+		xor	aux, tmp
+		shr	aux, #8				' get MSB to LSB
+		test	aux, #HF	WC		' carry from bit 3 to bit 4?
+		muxc	F, #HF
+		test	aux, #$100	WC		' carry from bit 15 to bit 16?
+		muxc	F, #CF
+		andn	F, #NF				' always clear negative flag
+		wrword	alu, XY
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_add_xy_sp	' dd/fd 39
+		mov	tmp, SP
+		rdword	alu, XY
+		mov	aux, alu
+		add	alu, tmp
+		xor	aux, alu
+		xor	aux, tmp
+		shr	aux, #8				' get MSB to LSB
+		test	aux, #HF	WC		' carry from bit 3 to bit 4?
+		muxc	F, #HF
+		test	aux, #$100	WC		' carry from bit 15 to bit 16?
+		muxc	F, #CF
+		andn	F, #NF				' always clear negative flag
+		wrword	alu, XY
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_ld_mxy_imm8	' 36
+		call	#mxy				' compute (IX/Y+disp8)
+		mov	tmp, ea				' save ea
+		call	#rd_opcode			' fetch byte
+		mov	ea, tmp				' restore ea
+		call	#wr_byte			' write byte to mem[ea]
+		jmp	#fetch
+' ----------------------------------------------------------------------------------------------
+z_ex_sp_xy	' e3
+		mov	ea, SP
+		call	#rd_word
+		rdword	tmp, XY
+		xor	alu, tmp
+		xor	tmp, alu
+		xor	alu, tmp
+		wrword	tmp, XY
+		mov	ea, SP
+		call	#wr_word
+		jmp	#fetch
+
+'******************************************************************************
+'
+'		OPCODES DD/FD CB
+'
+'******************************************************************************
+
+' ----------------------------------------------------------------------------------------------
+z_rlc_mxy	' dd/fd cb 00..07
+		call	#alu_rlc
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_rrc_mxy	' dd/fd cb 08..0f
+		call	#alu_rrc
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_rl_mxy	' dd/fd cb 10..17
+		call	#alu_rl
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_rr_mxy	' dd/fd cb 18..1f
+		call	#alu_rr
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_sla_mxy	' dd/fd cb 20..27
+		call	#alu_sla
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_sra_mxy	' dd/fd cb 28..2f
+		call	#alu_sra
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_sli_mxy	' dd/fd cb 30..37
+		call	#alu_sli
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_srl_mxy	' dd/fd cb 38..3f
+		call	#alu_srl
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_bit_0_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit0
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_1_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit1
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_2_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit2
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_3_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit3
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_4_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit4
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_5_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit5
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_6_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit6
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_bit_7_mxy	' dd/fd cb 40..7f
+		mov	tmp, #bit7
+		jmp	#alu_bit
+' ----------------------------------------------------------------------------------------------
+z_res_0_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit0
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_1_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit1
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_2_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit2
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_3_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit3
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_4_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit4
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_5_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit5
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_6_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit6
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_res_7_mxy	' dd/fd cb 80..bf
+		andn	alu, #bit7
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_0_mxy	' dd/fd cb c0..ff
+		or	alu, #bit0
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_1_mxy	' dd/fd cb c0..ff
+		or	alu, #bit1
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_2_mxy	' dd/fd cb c0..ff
+		or	alu, #bit2
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_3_mxy	' dd/fd cb c0..ff
+		or	alu, #bit3
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_4_mxy	' dd/fd cb c0..ff
+		or	alu, #bit4
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_5_mxy	' dd/fd cb c0..ff
+		or	alu, #bit5
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_6_mxy	' dd/fd cb c0..ff
+		or	alu, #bit6 
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+z_set_7_mxy	' dd/fd cb c0..ff
+		or	alu, #bit7
+		call	#wr_byte
+		jmp	postop
+' ----------------------------------------------------------------------------------------------
+
+opcodes_00
+	{00}	long	fetch								' NOP
+	{01}	long	imm16_to_alu	| alu_to_bc        << 9				' LD   BC,nnnn
+	{02}	long	bc_to_ea	| a_to_alu         << 9	| wr_byte_ea      << 18	' LD   (BC),A
+	{03}	long	bc_to_alu	| inc16	           << 9	| alu_to_bc       << 18	' INC  BC
+	{04}	long	b_to_alu	| alu_inc          << 9	| alu_to_b        << 18	' INC  B
+	{05}	long	b_to_alu	| alu_dec          << 9	| alu_to_b        << 18	' DEC  B
+	{06}	long	imm8_to_alu	| alu_to_b         << 9				' LD   B,nn
+	{07}	long	lmm		| @@@z_rlca        << 9				' RLCA
+
+	{08}	long	lmm		| @@@z_ex_af_af2   << 9				' EX   AF,AF'
+	{09}	long	lmm		| @@@z_add_hl_bc   << 9				' ADD  HL,BC
+	{0a}	long	bc_to_ea	| rd_byte_ea       << 9	| alu_to_a        << 18	' LD   A,(BC)
+	{0b}	long	bc_to_alu	| dec16	           << 9	| alu_to_bc       << 18	' DEC  BC
+	{0c}	long	c_to_alu	| alu_inc          << 9	| alu_to_c        << 18	' INC  C
+	{0d}	long	c_to_alu	| alu_dec          << 9	| alu_to_c        << 18	' DEC  C
+	{0e}	long	imm8_to_alu	| alu_to_c         << 9				' LD   C,nn
+	{0f}	long	lmm		| @@@z_rrca        << 9				' RRCA
+
+	{10}	long	z_djnz								' DJNZ offs8
+	{11}	long	imm16_to_alu	| alu_to_de        << 9				' LD   DE,nnnn
+	{12}	long	de_to_ea	| a_to_alu         << 9	| wr_byte_ea      << 18	' LD   (DE),A
+	{13}	long	de_to_alu	| inc16	           << 9	| alu_to_de       << 18	' INC  DE
+	{14}	long	d_to_alu	| alu_inc          << 9	| alu_to_d        << 18	' INC  D
+	{15}	long	d_to_alu	| alu_dec          << 9	| alu_to_d        << 18	' DEC  D
+	{16}	long	imm8_to_alu	| alu_to_d         << 9				' LD   D,nn
+	{17}	long	lmm		| @@@z_rla         << 9				' RLA
+
+	{18}	long	z_jr								' JR   offs8
+	{19}	long	lmm		| @@@z_add_hl_de   << 9				' ADD  HL,DE
+	{1a}	long	de_to_ea	| rd_byte_ea       << 9	| alu_to_a        << 18	' LD   A,(DE)
+	{1b}	long	de_to_alu	| dec16	           << 9	| alu_to_de       << 18	' DEC  DE
+	{1c}	long	e_to_alu	| alu_inc          << 9	| alu_to_e        << 18	' INC  E
+	{1d}	long	e_to_alu	| alu_dec          << 9	| alu_to_e        << 18	' DEC  E
+	{1e}	long	imm8_to_alu	| alu_to_e         << 9				' LD   E,nn
+	{1f}	long	lmm		| @@@z_rra         << 9				' RRA
+
+	{20}	long	test_flag_0	| jr_cond          << 9 | ZF              << 18	' JR   NZ,offs8
+	{21}	long	imm16_to_alu	| alu_to_hl        << 9				' LD   HL,nnnn
+	{22}	long	imm16_to_ea	| hl_to_alu        << 9	| wr_word_ea      << 18	' LD   (nnnn),HL
+	{23}	long	hl_to_alu	| inc16	           << 9	| alu_to_hl       << 18	' INC  HL
+	{24}	long	h_to_alu	| alu_inc          << 9	| alu_to_h        << 18	' INC  H
+	{25}	long	h_to_alu	| alu_dec          << 9	| alu_to_h        << 18	' DEC  H
+	{26}	long	imm8_to_alu	| alu_to_h         << 9				' LD   H,nn
+	{27}	long	lmm		| @@@z_daa         << 9				' DAA
+
+	{28}	long	test_flag_1	| jr_cond          << 9 | ZF              << 18	' JR   Z,offs8
+	{29}	long	lmm		| @@@z_add_hl_hl   << 9				' ADD  HL,HL
+	{2a}	long	imm16_to_ea	| rd_word_ea       << 9	| alu_to_hl       << 18	' LD   HL,(nnnn)
+	{2b}	long	hl_to_alu	| dec16	           << 9	| alu_to_hl       << 18	' DEC  HL
+	{2c}	long	l_to_alu	| alu_inc          << 9	| alu_to_l        << 18	' INC  L
+	{2d}	long	l_to_alu	| alu_dec          << 9	| alu_to_l        << 18	' DEC  L
+	{2e}	long	imm8_to_alu	| alu_to_l         << 9				' LD   L,nn
+	{2f}	long	lmm		| @@@z_cpl         << 9				' CPL
+
+	{30}	long	test_flag_0	| jr_cond          << 9 | CF              << 18	' JR   NC,offs8
+	{31}	long	imm16_to_alu	| alu_to_sp        << 9				' LD   SP,nnnn
+	{32}	long	imm16_to_ea	| a_to_alu         << 9	| wr_byte_ea      << 18	' LD   (nnnn),A
+	{33}	long	sp_to_alu	| inc16	           << 9	| alu_to_sp       << 18	' INC  SP
+	{34}	long	m_to_alu	| alu_inc          << 9	| alu_to_m        << 18	' INC  (HL)
+	{35}	long	m_to_alu	| alu_dec          << 9	| alu_to_m        << 18	' DEC  (HL)
+	{36}	long	imm8_to_alu	| hl_to_ea         << 9 | alu_to_m        << 18	' LD   (HL),nn
+	{37}	long	lmm		| @@@z_scf         << 9				' SCF
+
+	{38}	long	test_flag_1	| jr_cond          << 9 | CF              << 18	' JR   C,offs8
+	{39}	long	lmm		| @@@z_add_hl_sp   << 9				' ADD  HL,SP
+	{3a}	long	imm16_to_ea	| rd_byte_ea       << 9	| alu_to_a        << 18	' LD   A,(nnnn)
+	{3b}	long	sp_to_alu	| dec16	           << 9	| alu_to_sp       << 18	' DEC  SP
+	{3c}	long	a_to_alu	| alu_inc          << 9	| alu_to_a        << 18	' INC  A
+	{3d}	long	a_to_alu	| alu_dec          << 9	| alu_to_a        << 18	' DEC  A
+	{3e}	long	imm8_to_alu	| alu_to_a         << 9				' LD   A,nn
+	{3f}	long	lmm		| @@@z_ccf         << 9				' CCF
+
+	{40}	long	fetch								' LD   B,B
+	{41}	long	c_to_alu	| alu_to_b         << 9				' LD   B,C
+	{42}	long	d_to_alu	| alu_to_b         << 9				' LD   B,D
+	{43}	long	e_to_alu	| alu_to_b         << 9				' LD   B,E
+	{44}	long	h_to_alu	| alu_to_b         << 9				' LD   B,H
+	{45}	long	l_to_alu	| alu_to_b         << 9				' LD   B,L
+	{46}	long	m_to_alu	| alu_to_b         << 9				' LD   B,(HL)
+	{47}	long	a_to_alu	| alu_to_b         << 9				' LD   B,A
+
+	{48}	long	b_to_alu	| alu_to_c         << 9				' LD   C,B
+	{49}	long	fetch								' LD   C,C
+	{4a}	long	d_to_alu	| alu_to_c         << 9				' LD   C,D
+	{4b}	long	e_to_alu	| alu_to_c         << 9				' LD   C,E
+	{4c}	long	h_to_alu	| alu_to_c         << 9				' LD   C,H
+	{4d}	long	l_to_alu	| alu_to_c         << 9				' LD   C,L
+	{4e}	long	m_to_alu	| alu_to_c         << 9				' LD   C,(HL)
+	{4f}	long	a_to_alu	| alu_to_c         << 9				' LD   C,A
+
+	{50}	long	b_to_alu	| alu_to_d         << 9				' LD   D,B
+	{51}	long	c_to_alu	| alu_to_d         << 9				' LD   D,C
+	{52}	long	fetch								' LD   D,D
+	{53}	long	e_to_alu	| alu_to_d         << 9				' LD   D,E
+	{54}	long	h_to_alu	| alu_to_d         << 9				' LD   D,H
+	{55}	long	l_to_alu	| alu_to_d         << 9				' LD   D,L
+	{56}	long	m_to_alu	| alu_to_d         << 9				' LD   D,(HL)
+	{57}	long	a_to_alu	| alu_to_d         << 9				' LD   D,A
+
+	{58}	long	b_to_alu	| alu_to_e         << 9				' LD   E,B
+	{59}	long	c_to_alu	| alu_to_e         << 9				' LD   E,C
+	{5a}	long	d_to_alu	| alu_to_e         << 9				' LD   E,D
+	{5b}	long	fetch								' LD   E,E
+	{5c}	long	h_to_alu	| alu_to_e         << 9				' LD   E,H
+	{5d}	long	l_to_alu	| alu_to_e         << 9				' LD   E,L
+	{5e}	long	m_to_alu	| alu_to_e         << 9				' LD   E,(HL)
+	{5f}	long	a_to_alu	| alu_to_e         << 9				' LD   E,A
+
+	{60}	long	b_to_alu	| alu_to_h         << 9				' LD   H,B
+	{61}	long	c_to_alu	| alu_to_h         << 9				' LD   H,C
+	{62}	long	d_to_alu	| alu_to_h         << 9				' LD   H,D
+	{63}	long	e_to_alu	| alu_to_h         << 9				' LD   H,E
+	{64}	long	fetch								' LD   H,H
+	{65}	long	l_to_alu	| alu_to_h         << 9				' LD   H,L
+	{66}	long	m_to_alu	| alu_to_h         << 9				' LD   H,(HL)
+	{67}	long	a_to_alu	| alu_to_h         << 9				' LD   H,A
+
+	{68}	long	b_to_alu	| alu_to_l         << 9				' LD   L,B
+	{69}	long	c_to_alu	| alu_to_l         << 9				' LD   L,C
+	{6a}	long	d_to_alu	| alu_to_l         << 9				' LD   L,D
+	{6b}	long	e_to_alu	| alu_to_l         << 9				' LD   L,E
+	{6c}	long	h_to_alu	| alu_to_l         << 9				' LD   L,H
+	{6d}	long	fetch								' LD   L,L
+	{6e}	long	m_to_alu	| alu_to_l         << 9				' LD   L,(HL)
+	{6f}	long	a_to_alu	| alu_to_l         << 9				' LD   L,A
+
+	{70}	long	hl_to_ea	| b_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),B
+	{70}	long	hl_to_ea	| c_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),C
+	{70}	long	hl_to_ea	| d_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),D
+	{70}	long	hl_to_ea	| e_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),E
+	{70}	long	hl_to_ea	| h_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),H
+	{70}	long	hl_to_ea	| l_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),L
+	{76}	long	lmm		| @@@z_halt        << 9				' HALT
+	{70}	long	hl_to_ea	| a_to_alu         << 9	| alu_to_m        << 18	' LD   (HL),A
+
+	{78}	long	b_to_alu	| alu_to_a         << 9				' LD   A,B
+	{79}	long	c_to_alu	| alu_to_a         << 9				' LD   A,C
+	{7a}	long	d_to_alu	| alu_to_a         << 9				' LD   A,D
+	{7b}	long	e_to_alu	| alu_to_a         << 9				' LD   A,E
+	{7c}	long	h_to_alu	| alu_to_a         << 9				' LD   A,H
+	{7d}	long	l_to_alu	| alu_to_a         << 9				' LD   A,L
+	{7e}	long	m_to_alu	| alu_to_a         << 9				' LD   A,(HL)
+	{7f}	long	fetch								' LD   A,A
+
+	{80}	long	b_to_alu	| alu_add          << 9				' ADD  A,B
+	{81}	long	c_to_alu	| alu_add          << 9				' ADD  A,C
+	{82}	long	d_to_alu	| alu_add          << 9				' ADD  A,D
+	{83}	long	e_to_alu	| alu_add          << 9				' ADD  A,E
+	{84}	long	h_to_alu	| alu_add          << 9				' ADD  A,H
+	{85}	long	l_to_alu	| alu_add          << 9				' ADD  A,L
+	{86}	long	m_to_alu	| alu_add          << 9				' ADD  A,(HL)
+	{87}	long	a_to_alu	| alu_add          << 9				' ADD  A,A
+
+	{88}	long	b_to_alu	| alu_adc          << 9				' ADC  A,B
+	{89}	long	c_to_alu	| alu_adc          << 9				' ADC  A,C
+	{8a}	long	d_to_alu	| alu_adc          << 9				' ADC  A,D
+	{8b}	long	e_to_alu	| alu_adc          << 9				' ADC  A,E
+	{8c}	long	h_to_alu	| alu_adc          << 9				' ADC  A,H
+	{8d}	long	l_to_alu	| alu_adc          << 9				' ADC  A,L
+	{8e}	long	m_to_alu	| alu_adc          << 9				' ADC  A,(HL)
+	{8f}	long	a_to_alu	| alu_adc          << 9				' ADC  A,A
+
+	{90}	long	b_to_alu	| alu_sub          << 9				' SUB  B
+	{91}	long	c_to_alu	| alu_sub          << 9				' SUB  C
+	{92}	long	d_to_alu	| alu_sub          << 9				' SUB  D
+	{93}	long	e_to_alu	| alu_sub          << 9				' SUB  E
+	{94}	long	h_to_alu	| alu_sub          << 9				' SUB  H
+	{95}	long	l_to_alu	| alu_sub          << 9				' SUB  L
+	{96}	long	m_to_alu	| alu_sub          << 9				' SUB  (HL)
+	{97}	long	a_to_alu	| alu_sub          << 9				' SUB  A
+
+	{98}	long	b_to_alu	| alu_sbc          << 9				' SBC  A,B
+	{99}	long	c_to_alu	| alu_sbc          << 9				' SBC  A,C
+	{9a}	long	d_to_alu	| alu_sbc          << 9				' SBC  A,D
+	{9b}	long	e_to_alu	| alu_sbc          << 9				' SBC  A,E
+	{9c}	long	h_to_alu	| alu_sbc          << 9				' SBC  A,H
+	{9d}	long	l_to_alu	| alu_sbc          << 9				' SBC  A,L
+	{9e}	long	m_to_alu	| alu_sbc          << 9				' SBC  A,(HL)
+	{9f}	long	a_to_alu	| alu_sbc          << 9				' SBC  A,A
+
+	{a0}	long	b_to_alu	| alu_and          << 9				' AND  B
+	{a1}	long	c_to_alu	| alu_and          << 9				' AND  C
+	{a2}	long	d_to_alu	| alu_and          << 9				' AND  D
+	{a3}	long	e_to_alu	| alu_and          << 9				' AND  E
+	{a4}	long	h_to_alu	| alu_and          << 9				' AND  H
+	{a5}	long	l_to_alu	| alu_and          << 9				' AND  L
+	{a6}	long	m_to_alu	| alu_and          << 9				' AND  (HL)
+	{a7}	long	a_to_alu	| alu_and          << 9				' AND  A
+
+	{a8}	long	b_to_alu	| alu_xor          << 9				' XOR  B
+	{a9}	long	c_to_alu	| alu_xor          << 9				' XOR  C
+	{aa}	long	d_to_alu	| alu_xor          << 9				' XOR  D
+	{ab}	long	e_to_alu	| alu_xor          << 9				' XOR  E
+	{ac}	long	h_to_alu	| alu_xor          << 9				' XOR  H
+	{ad}	long	l_to_alu	| alu_xor          << 9				' XOR  L
+	{ae}	long	m_to_alu	| alu_xor          << 9				' XOR  (HL)
+	{af}	long	a_to_alu	| alu_xor          << 9				' XOR  A
+
+	{b0}	long	b_to_alu	| alu_or           << 9				' OR   B
+	{b1}	long	c_to_alu	| alu_or           << 9				' OR   C
+	{b2}	long	d_to_alu	| alu_or           << 9				' OR   D
+	{b3}	long	e_to_alu	| alu_or           << 9				' OR   E
+	{b4}	long	h_to_alu	| alu_or           << 9				' OR   H
+	{b5}	long	l_to_alu	| alu_or           << 9				' OR   L
+	{b6}	long	m_to_alu	| alu_or           << 9				' OR   (HL)
+	{b7}	long	a_to_alu	| alu_or           << 9				' OR   A
+ 
+	{b8}	long	b_to_alu	| alu_cp           << 9				' CP   B
+	{b9}	long	c_to_alu	| alu_cp           << 9				' CP   C
+	{ba}	long	d_to_alu	| alu_cp           << 9				' CP   D
+	{bb}	long	e_to_alu	| alu_cp           << 9				' CP   E
+	{bc}	long	h_to_alu	| alu_cp           << 9				' CP   H
+	{bd}	long	l_to_alu	| alu_cp           << 9				' CP   L
+	{be}	long	m_to_alu	| alu_cp           << 9				' CP   (HL)
+	{bf}	long	a_to_alu	| alu_cp           << 9				' CP   A
+
+	{c0}	long	test_flag_0	| ret_cond         << 9 | ZF              << 18	' RET  NZ
+	{c1}	long	pop_bc								' POP  BC
+	{c2}	long	test_flag_0	| jp_cond          << 9 | ZF              << 18	' JP   NZ,nnnn
+	{c3}	long	imm16_to_alu	| alu_to_pc        << 9				' JP   nnnn
+	{c4}	long	test_flag_0	| call_cond        << 9 | ZF              << 18	' CALL NZ,nnnn
+	{c5}	long	bc_to_alu	| push_reg         << 9				' PUSH BC
+	{c6}	long	imm8_to_alu	| alu_add          << 9				' ADD  A,imm8
+	{c7}	long	rst								' RST  00
+
+	{c8}	long	test_flag_1	| ret_cond         << 9 | ZF              << 18	' RET  Z
+	{c9}	long	do_ret								' RET
+	{ca}	long	test_flag_1	| jp_cond          << 9 | ZF              << 18	' JP   Z,nnnn
+	{cb}	long	lmm		| @@@z_cb_xx       << 9				' $CB xx
+	{cc}	long	test_flag_1	| call_cond        << 9 | ZF              << 18	' CALL Z,nnnn
+	{cd}	long	imm16_to_alu	| do_call          << 9				' CALL nnnn
+	{ce}	long	imm8_to_alu	| alu_adc          << 9				' ADC  A,imm8
+	{cf}	long	rst								' RST  08
+
+	{d0}	long	test_flag_0	| ret_cond         << 9 | CF              << 18	' RET  NC
+	{c1}	long	pop_de								' POP  DE
+	{d2}	long	test_flag_0	| jp_cond          << 9 | CF              << 18	' JP   NC,nnnn
+	{d3}	long	imm8_to_ea	| a_to_alu         << 9 | alu_to_port     << 18	' OUT  (nn),A
+	{d4}	long	test_flag_0	| call_cond        << 9 | CF              << 18	' CALL NC,nnnn
+	{d5}	long	de_to_alu	| push_reg         << 9				' PUSH DE
+	{d6}	long	imm8_to_alu	| alu_sub          << 9				' SUB  imm8
+	{d7}	long	rst								' RST  10
+
+	{d8}	long	test_flag_1	| ret_cond         << 9 | CF              << 18	' RET  C
+	{d9}	long	lmm		| @@@z_exx         << 9				' EXX
+	{da}	long	test_flag_1	| jp_cond          << 9 | CF              << 18	' JP   C,nnnn
+	{db}	long	imm8_to_ina{ea}	| port_to_alu      << 9 | alu_to_a        << 18	' IN   A,(nn)
+	{dc}	long	test_flag_1	| call_cond        << 9 | CF              << 18	' CALL C,nnnn
+	{dd}	long	lmm		| @@@z_dd_xx       << 9				' $DD xx
+	{de}	long	imm8_to_alu	| alu_sbc          << 9				' SBC  A,imm8
+	{df}	long	rst								' RST  18
+
+	{e0}	long	test_flag_0	| ret_cond         << 9 | PF              << 18	' RET  PE
+	{e1}	long	pop_hl								' POP  HL
+	{e2}	long	test_flag_0	| jp_cond          << 9 | PF              << 18	' JP   PE,nnnn
+	{e3}	long	lmm		| @@@z_ex_sp_hl    << 9				' EX   (SP),HL
+	{e4}	long	test_flag_0	| call_cond        << 9 | PF              << 18	' CALL PE,nnnn
+	{e5}	long	hl_to_alu	| push_reg         << 9				' PUSH HL
+	{e6}	long	imm8_to_alu	| alu_and          << 9				' AND  imm8
+	{e7}	long	rst								' RST  20
+
+	{e8}	long	test_flag_1	| ret_cond         << 9 | PF              << 18	' RET  PO
+	{e9}	long	hl_to_alu	| alu_to_pc        << 9				' JP   (HL)
+	{ea}	long	test_flag_1	| jp_cond          << 9 | PF              << 18	' JP   PO,nnnn
+	{eb}	long	lmm		| @@@z_ex_de_hl    << 9				' EX   DE,HL
+	{ec}	long	test_flag_1	| call_cond        << 9 | PF              << 18	' CALL PO,nnnn
+	{ed}	long	lmm		| @@@z_ed_xx       << 9				' $ED xx
+	{ee}	long	imm8_to_alu	| alu_xor          << 9				' XOR  imm8
+	{ef}	long	rst								' RST  28
+
+	{f0}	long	test_flag_0	| ret_cond         << 9 | SF              << 18	' RET  P
+	{f1}	long	pop_af								' POP  AF
+	{f2}	long	test_flag_0	| jp_cond          << 9 | SF              << 18	' JP   P,nnnn
+	{f3}	long	lmm		| @@@z_di          << 9				' DI
+	{f4}	long	test_flag_0	| call_cond        << 9 | SF              << 18	' CALL P,nnnn
+	{f5}	long	af_to_alu	| push_reg         << 9				' PUSH AF
+	{f6}	long	imm8_to_alu	| alu_or           << 9				' OR   imm8
+	{f7}	long	rst								' RST  30
+
+	{f8}	long	test_flag_1	| ret_cond         << 9 | SF              << 18	' RET  M
+	{f9}	long	hl_to_alu	| alu_to_sp        << 9				' LD   SP,HL
+	{fa}	long	test_flag_1	| jp_cond          << 9 | SF              << 18	' JP   M,nnnn
+	{fb}	long	lmm		| @@@z_ei          << 9				' EI
+	{fc}	long	test_flag_1	| call_cond        << 9 | SF              << 18	' CALL M,nnnn
+	{fd}	long	lmm		| @@@z_fd_xx       << 9				' $FD xx
+	{fe}	long	imm8_to_alu	| alu_cp           << 9				' CP   imm8
+	{ff}	long	rst								' RST  38
+
+opcodes_xy
+	{00}	long	fetch								' NOP
+	{01}	long	imm16_to_alu	| alu_to_bc        << 9				' LD   BC,nnnn
+	{02}	long	bc_to_ea	| a_to_alu         << 9	| wr_byte_ea      << 18	' LD   (BC),A
+	{03}	long	bc_to_alu	| inc16	           << 9	| alu_to_bc       << 18	' INC  BC
+	{04}	long	b_to_alu	| alu_inc          << 9	| alu_to_b        << 18	' INC  B
+	{05}	long	b_to_alu	| alu_dec          << 9	| alu_to_b        << 18	' DEC  B
+	{06}	long	imm8_to_alu	| alu_to_b         << 9				' LD   B,nn
+	{07}	long	lmm		| @@@z_rlca        << 9				' RLCA
+
+	{08}	long	lmm		| @@@z_ex_af_af2   << 9				' EX   AF,AF'
+	{09}	long	lmm		| @@@z_add_xy_bc   << 9				' ADD  IX,BC
+	{0a}	long	bc_to_ea	| rd_byte_ea       << 9	| alu_to_a        << 18	' LD   A,(BC)
+	{0b}	long	bc_to_alu	| dec16	           << 9	| alu_to_bc       << 18	' DEC  BC
+	{0c}	long	c_to_alu	| alu_inc          << 9	| alu_to_c        << 18	' INC  C
+	{0d}	long	c_to_alu	| alu_dec          << 9	| alu_to_c        << 18	' DEC  C
+	{0e}	long	imm8_to_alu	| alu_to_c         << 9				' LD   C,nn
+	{0f}	long	lmm		| @@@z_rrca        << 9				' RRCA
+
+	{10}	long	z_djnz								' DJNZ offs8
+	{11}	long	imm16_to_alu	| alu_to_de        << 9				' LD   DE,nnnn
+	{12}	long	de_to_ea	| a_to_alu         << 9	| wr_byte_ea      << 18	' LD   (DE),A
+	{13}	long	de_to_alu	| inc16	           << 9	| alu_to_de       << 18	' INC  DE
+	{14}	long	d_to_alu	| alu_inc          << 9	| alu_to_d        << 18	' INC  D
+	{15}	long	d_to_alu	| alu_dec          << 9	| alu_to_d        << 18	' DEC  D
+	{16}	long	imm8_to_alu	| alu_to_d         << 9				' LD   D,nn
+	{17}	long	lmm		| @@@z_rla         << 9				' RLA
+
+	{18}	long	z_jr								' JR   offs8
+	{19}	long	lmm		| @@@z_add_xy_de   << 9				' ADD  IX,DE
+	{1a}	long	de_to_ea	| rd_byte_ea       << 9	| alu_to_a        << 18	' LD   A,(DE)
+	{1b}	long	de_to_alu	| dec16	           << 9	| alu_to_de       << 18	' DEC  DE
+	{1c}	long	e_to_alu	| alu_inc          << 9	| alu_to_e        << 18	' INC  E
+	{1d}	long	e_to_alu	| alu_dec          << 9	| alu_to_e        << 18	' DEC  E
+	{1e}	long	imm8_to_alu	| alu_to_e         << 9				' LD   E,nn
+	{1f}	long	lmm		| @@@z_rra         << 9				' RRA
+
+	{20}	long	test_flag_0	| jr_cond          << 9 | ZF              << 18	' JR   NZ,offs8
+	{21}	long	imm16_to_alu	| alu_to_xy        << 9				' LD   IX,nnnn
+	{22}	long	imm16_to_ea	| xy_to_alu        << 9	| wr_word_ea      << 18	' LD   (nnnn),IX
+	{23}	long	xy_to_alu	| inc16            << 9 | alu_to_xy       << 18	' INC  IX
+	{24}	long	hxy_to_alu	| alu_inc          << 9	| alu_to_hxy      << 18	' INC  HX
+	{25}	long	hxy_to_alu	| alu_dec          << 9	| alu_to_hxy      << 18	' DEC  HX
+	{26}	long	imm8_to_alu	| alu_to_hxy       << 9				' LD   HX,nn
+	{27}	long	lmm		| @@@z_daa         << 9				' DAA
+
+	{28}	long	test_flag_1	| jr_cond          << 9 | ZF              << 18	' JR   Z,offs8
+	{29}	long	lmm		| @@@z_add_xy_xy   << 9				' ADD  IX,IX
+	{2a}	long	imm16_to_ea     | rd_word_ea       << 9	| alu_to_xy       << 18	' LD   IX,(nnnn)
+	{2b}	long	xy_to_alu	| dec16            << 9 | alu_to_xy       << 18	' DEC  IX
+	{2c}	long	lxy_to_alu	| alu_inc          << 9	| alu_to_lxy      << 18	' INC  LX
+	{2d}	long	lxy_to_alu	| alu_dec          << 9	| alu_to_lxy      << 18	' DEC  LX
+	{2e}	long	imm8_to_alu	| alu_to_lxy       << 9				' LD   LX,nn
+	{2f}	long	lmm		| @@@z_cpl         << 9				' CPL
+
+	{30}	long	test_flag_0	| jr_cond          << 9 | CF              << 18	' JR   NC,offs8
+	{31}	long	imm16_to_alu	| alu_to_sp        << 9				' LD   SP,nnnn
+	{32}	long	imm16_to_ea	| a_to_alu         << 9	| wr_byte_ea      << 18	' LD   (nnnn),A
+	{33}	long	sp_to_alu	| inc16	           << 9	| alu_to_sp       << 18	' INC  SP
+	{34}	long	mxy_to_alu	| alu_inc          << 9	| alu_to_m        << 18	' INC  (IX+disp8)
+	{35}	long	mxy_to_alu	| alu_dec          << 9 | alu_to_m        << 18	' DEC  (IX+disp8)
+	{36}	long	lmm		| @@@z_ld_mxy_imm8 << 9				' LD   (IX+disp8),nn
+	{37}	long	lmm		| @@@z_scf         << 9				' SCF
+
+	{38}	long	test_flag_1	| jr_cond          << 9 | CF              << 18	' JR   C,offs8
+	{39}	long	lmm		| @@@z_add_xy_sp   << 9				' ADD  IX,SP
+	{3a}	long	imm16_to_ea	| rd_byte_ea       << 9	| alu_to_a        << 18	' LD   A,(nnnn)
+	{3b}	long	sp_to_alu	| dec16	           << 9	| alu_to_sp       << 18	' DEC  SP
+	{3c}	long	a_to_alu	| alu_inc          << 9	| alu_to_a        << 18	' INC  A
+	{3d}	long	a_to_alu	| alu_dec          << 9	| alu_to_a        << 18	' DEC  A
+	{3e}	long	imm8_to_alu	| alu_to_a         << 9				' LD   A,nn
+	{3f}	long	lmm		| @@@z_ccf         << 9				' CCF
+
+	{40}	long	fetch								' LD   B,B
+	{41}	long	c_to_alu	| alu_to_b         << 9				' LD   B,C
+	{42}	long	d_to_alu	| alu_to_b         << 9				' LD   B,D
+	{43}	long	e_to_alu	| alu_to_b         << 9				' LD   B,E
+	{44}	long	hxy_to_alu	| alu_to_b         << 9				' LD   B,HX
+	{45}	long	lxy_to_alu	| alu_to_b         << 9				' LD   B,LX
+	{46}	long	mxy_to_alu	| alu_to_b         << 9				' LD   B,(IX+disp8)
+	{47}	long	a_to_alu	| alu_to_b         << 9				' LD   B,A
+
+	{48}	long	b_to_alu	| alu_to_c         << 9				' LD   C,B
+	{49}	long	fetch								' LD   C,C
+	{4a}	long	d_to_alu	| alu_to_c         << 9				' LD   C,D
+	{4b}	long	e_to_alu	| alu_to_c         << 9				' LD   C,E
+	{4c}	long	hxy_to_alu	| alu_to_c         << 9				' LD   C,HX
+	{4d}	long	lxy_to_alu	| alu_to_c         << 9				' LD   C,LX
+	{4e}	long	mxy_to_alu	| alu_to_c         << 9				' LD   C,(IX+disp8)
+	{4f}	long	a_to_alu	| alu_to_c         << 9				' LD   C,A
+
+	{50}	long	b_to_alu	| alu_to_d         << 9				' LD   D,B
+	{51}	long	c_to_alu	| alu_to_d         << 9				' LD   D,C
+	{52}	long	fetch								' LD   D,D
+	{53}	long	e_to_alu	| alu_to_d         << 9				' LD   D,E
+	{54}	long	hxy_to_alu	| alu_to_d         << 9				' LD   D,HX
+	{55}	long	lxy_to_alu	| alu_to_d         << 9				' LD   D,LX
+	{56}	long	mxy_to_alu	| alu_to_d         << 9				' LD   D,(IX+disp8)
+	{57}	long	a_to_alu	| alu_to_d         << 9				' LD   D,A
+
+	{58}	long	b_to_alu	| alu_to_e         << 9				' LD   E,B
+	{59}	long	c_to_alu	| alu_to_e         << 9				' LD   E,C
+	{5a}	long	d_to_alu	| alu_to_e         << 9				' LD   E,D
+	{5b}	long	fetch								' LD   E,E
+	{5c}	long	hxy_to_alu	| alu_to_e         << 9				' LD   E,HX
+	{5d}	long	lxy_to_alu	| alu_to_e         << 9				' LD   E,LX
+	{5e}	long	mxy_to_alu	| alu_to_e         << 9				' LD   E,(IX+disp8)
+	{5f}	long	a_to_alu	| alu_to_e         << 9				' LD   E,A
+
+	{60}	long	b_to_alu	| alu_to_hxy       << 9				' LD   HX,B
+	{61}	long	c_to_alu	| alu_to_hxy       << 9				' LD   HX,C
+	{62}	long	d_to_alu	| alu_to_hxy       << 9				' LD   HX,D
+	{63}	long	e_to_alu	| alu_to_hxy       << 9				' LD   HX,E
+	{64}	long	fetch								' LD   HX,HX
+	{45}	long	lxy_to_alu	| alu_to_hxy       << 9				' LD   HX,LX
+	{66}	long	mxy_to_alu	| alu_to_h         << 9				' LD   H,(IX+disp8)
+	{67}	long	a_to_alu	| alu_to_hxy       << 9				' LD   HX,A
+
+	{68}	long	b_to_alu	| alu_to_lxy       << 9				' LD   LX,B
+	{69}	long	c_to_alu	| alu_to_lxy       << 9				' LD   LX,C
+	{6a}	long	d_to_alu	| alu_to_lxy       << 9				' LD   LX,D
+	{6b}	long	e_to_alu	| alu_to_lxy       << 9				' LD   LX,E
+	{6c}	long	hxy_to_alu	| alu_to_lxy       << 9				' LD   LX,HX
+	{6d}	long	fetch								' LD   LX,LX
+	{6e}	long	mxy_to_alu	| alu_to_l         << 9				' LD   L,(IX+disp8)
+	{6f}	long	a_to_alu	| alu_to_lxy       << 9				' LD   LX,A
+
+	{70}	long	mxy_to_ea	| b_to_alu         << 9	| alu_to_m        << 18	' LD   (IX+disp8),B
+	{71}	long	mxy_to_ea	| c_to_alu         << 9	| alu_to_m        << 18 ' LD   (IX+disp8),C
+	{72}	long	mxy_to_ea	| d_to_alu         << 9	| alu_to_m        << 18 ' LD   (IX+disp8),D
+	{73}	long	mxy_to_ea	| e_to_alu         << 9	| alu_to_m        << 18 ' LD   (IX+disp8),E
+	{74}	long	mxy_to_ea	| h_to_alu         << 9	| alu_to_m        << 18 ' LD   (IX+disp8),H
+	{75}	long	mxy_to_ea	| l_to_alu         << 9	| alu_to_m        << 18 ' LD   (IX+disp8),L
+	{76}	long	lmm		| @@@z_halt        << 9				' HALT
+	{77}	long	mxy_to_ea	| a_to_alu         << 9	| alu_to_m        << 18 ' LD   (IX+disp8),A
+
+	{78}	long	b_to_alu	| alu_to_a         << 9				' LD   A,B
+	{79}	long	c_to_alu	| alu_to_a         << 9				' LD   A,C
+	{7a}	long	d_to_alu	| alu_to_a         << 9				' LD   A,D
+	{7b}	long	e_to_alu	| alu_to_a         << 9				' LD   A,E
+	{7c}	long	hxy_to_alu	| alu_to_a         << 9				' LD   A,HX
+	{7d}	long	lxy_to_alu	| alu_to_a         << 9				' LD   A,LX
+	{7e}	long	mxy_to_alu	| alu_to_a         << 9				' LD   A,(IX+disp8)
+	{7f}	long	fetch								' LD   A,A
+
+	{80}	long	b_to_alu	| alu_add          << 9				' ADD  A,B
+	{81}	long	c_to_alu	| alu_add          << 9				' ADD  A,C
+	{82}	long	d_to_alu	| alu_add          << 9				' ADD  A,D
+	{83}	long	e_to_alu	| alu_add          << 9				' ADD  A,E
+	{84}	long	hxy_to_alu	| alu_add          << 9				' ADD  A,HX
+	{85}	long	lxy_to_alu	| alu_add          << 9				' ADD  A,HX
+	{86}	long	mxy_to_alu	| alu_add          << 9				' ADD  A,(IX+disp8)
+	{87}	long	a_to_alu	| alu_add          << 9				' ADD  A,A
+
+	{88}	long	b_to_alu	| alu_adc          << 9				' ADC  A,B
+	{89}	long	c_to_alu	| alu_adc          << 9				' ADC  A,C
+	{8a}	long	d_to_alu	| alu_adc          << 9				' ADC  A,D
+	{8b}	long	e_to_alu	| alu_adc          << 9				' ADC  A,E
+	{8c}	long	hxy_to_alu	| alu_adc          << 9				' ADC  A,HX
+	{8d}	long	lxy_to_alu	| alu_adc          << 9				' ADC  A,LX
+	{8e}	long	mxy_to_alu	| alu_adc          << 9				' ADC  A,(IX+disp8)
+	{8f}	long	a_to_alu	| alu_adc          << 9				' ADC  A,A
+
+	{90}	long	b_to_alu	| alu_sub          << 9				' SUB  B
+	{91}	long	c_to_alu	| alu_sub          << 9				' SUB  C
+	{92}	long	d_to_alu	| alu_sub          << 9				' SUB  D
+	{93}	long	e_to_alu	| alu_sub          << 9				' SUB  E
+	{94}	long	hxy_to_alu	| alu_sub          << 9				' SUB  HX
+	{95}	long	lxy_to_alu	| alu_sub          << 9				' SUB  LX
+	{96}	long	mxy_to_alu	| alu_sub          << 9				' SUB  (IX+disp8)
+	{97}	long	a_to_alu	| alu_sub          << 9				' SUB  A
+
+	{98}	long	b_to_alu	| alu_sbc          << 9				' SBC  A,B
+	{99}	long	c_to_alu	| alu_sbc          << 9				' SBC  A,C
+	{9a}	long	d_to_alu	| alu_sbc          << 9				' SBC  A,D
+	{9b}	long	e_to_alu	| alu_sbc          << 9				' SBC  A,E
+	{9c}	long	hxy_to_alu	| alu_sbc          << 9				' SBC  A,HX
+	{9d}	long	lxy_to_alu	| alu_sbc          << 9				' SBC  A,LX
+	{9e}	long	mxy_to_alu	| alu_sbc          << 9				' SBC  A,(IX+disp8)
+	{9f}	long	a_to_alu	| alu_sbc          << 9				' SBC  A,A
+
+	{a0}	long	b_to_alu	| alu_and          << 9				' AND  B
+	{a1}	long	c_to_alu	| alu_and          << 9				' AND  C
+	{a2}	long	d_to_alu	| alu_and          << 9				' AND  D
+	{a3}	long	e_to_alu	| alu_and          << 9				' AND  E
+	{a4}	long	hxy_to_alu	| alu_and          << 9				' AND  HX
+	{a5}	long	lxy_to_alu	| alu_and          << 9				' AND  LX
+	{a6}	long	mxy_to_alu	| alu_and          << 9				' AND  (IX+disp8)
+	{a7}	long	a_to_alu	| alu_and          << 9				' AND  A
+
+	{a8}	long	b_to_alu	| alu_xor          << 9				' XOR  B
+	{a9}	long	c_to_alu	| alu_xor          << 9				' XOR  C
+	{aa}	long	d_to_alu	| alu_xor          << 9				' XOR  D
+	{ab}	long	e_to_alu	| alu_xor          << 9				' XOR  E
+	{ac}	long	hxy_to_alu	| alu_xor          << 9				' XOR  HX
+	{ad}	long	lxy_to_alu	| alu_xor          << 9				' XOR  LX
+	{ae}	long	mxy_to_alu	| alu_xor          << 9				' XOR  (IX+disp8)
+	{af}	long	a_to_alu	| alu_xor          << 9				' XOR  A
+
+	{b0}	long	b_to_alu	| alu_or           << 9				' OR   B
+	{b1}	long	c_to_alu	| alu_or           << 9				' OR   C
+	{b2}	long	d_to_alu	| alu_or           << 9				' OR   D
+	{b3}	long	e_to_alu	| alu_or           << 9				' OR   E
+	{b4}	long	hxy_to_alu	| alu_or           << 9				' OR   HX
+	{b5}	long	lxy_to_alu	| alu_or           << 9				' OR   LX
+	{b6}	long	mxy_to_alu	| alu_or           << 9				' OR   (IX+disp8)
+	{b7}	long	a_to_alu	| alu_or           << 9				' OR   A
+ 
+	{b8}	long	b_to_alu	| alu_cp           << 9				' CP   B
+	{b9}	long	c_to_alu	| alu_cp           << 9				' CP   C
+	{ba}	long	d_to_alu	| alu_cp           << 9				' CP   D
+	{bb}	long	e_to_alu	| alu_cp           << 9				' CP   E
+	{bc}	long	hxy_to_alu	| alu_cp           << 9				' CP   HX
+	{bd}	long	lxy_to_alu	| alu_cp           << 9				' CP   LX
+	{be}	long	mxy_to_alu	| alu_cp           << 9				' CP   (IX+disp8)
+	{bf}	long	a_to_alu	| alu_cp           << 9				' CP   A
+
+	{c0}	long	test_flag_0	| ret_cond         << 9 | ZF              << 18	' RET  NZ
+	{c1}	long	pop_bc								' POP  BC
+	{c2}	long	test_flag_0	| jp_cond          << 9 | ZF              << 18	' JP   NZ,nnnn
+	{c3}	long	imm16_to_alu	| alu_to_pc        << 9				' JP   nnnn
+	{c4}	long	test_flag_0	| call_cond        << 9 | ZF              << 18	' CALL NZ,nnnn
+	{c5}	long	bc_to_alu	| push_reg         << 9				' PUSH BC
+	{c6}	long	imm8_to_alu	| alu_add          << 9				' ADD  A,imm8
+	{c7}	long	rst								' RST  00
+
+	{c8}	long	test_flag_1	| ret_cond         << 9 | ZF              << 18	' RET  Z
+	{c9}	long	do_ret								' RET
+	{ca}	long	test_flag_1	| jp_cond          << 9 | ZF              << 18	' JP   Z,nnnn
+	{cb}	long	lmm		| @@@z_cb_xx       << 9				' $CB xx
+	{cc}	long	test_flag_1	| call_cond        << 9 | ZF              << 18	' CALL Z,nnnn
+	{cd}	long	imm16_to_alu	| do_call          << 9				' CALL nnnn
+	{ce}	long	imm8_to_alu	| alu_adc          << 9				' ADC  A,imm8
+	{cf}	long	rst								' RST  08
+
+	{d0}	long	test_flag_0	| ret_cond         << 9 | CF              << 18	' RET  NC
+	{c1}	long	pop_de								' POP  DE
+	{d2}	long	test_flag_0	| jp_cond          << 9 | CF              << 18	' JP   NC,nnnn
+	{d3}	long	imm8_to_ea	| a_to_alu         << 9 | alu_to_port     << 18	' OUT  (nn),A
+	{d4}	long	test_flag_0	| call_cond        << 9 | CF              << 18	' CALL NC,nnnn
+	{d5}	long	de_to_alu	| push_reg         << 9				' PUSH DE
+	{d6}	long	imm8_to_alu	| alu_sub          << 9				' SUB  imm8
+	{d7}	long	rst								' RST  10
+
+	{d8}	long	test_flag_1	| ret_cond         << 9 | CF              << 18	' RET  C
+	{d9}	long	lmm		| @@@z_exx         << 9				' EXX
+	{da}	long	test_flag_1	| jp_cond          << 9 | CF              << 18	' JP   C,nnnn
+	{db}	long	imm8_to_ea	| port_to_alu      << 9 | alu_to_a        << 18	' IN   A,(nn)
+	{dc}	long	test_flag_1	| call_cond        << 9 | CF              << 18	' CALL C,nnnn
+	{dd}	long	lmm		| @@@z_dd_xx       << 9				' $DD xx
+	{de}	long	imm8_to_alu	| alu_sbc          << 9				' SBC  A,imm8
+	{df}	long	rst								' RST  18
+
+	{e0}	long	test_flag_0	| ret_cond         << 9 | PF              << 18	' RET  PE
+	{e1}	long	pop_xy								' POP  IX/IY
+	{e2}	long	test_flag_0	| jp_cond          << 9 | PF              << 18	' JP   PE,nnnn
+	{e3}	long	lmm		| @@@z_ex_sp_xy    << 9				' EX   (SP),IX/IY
+	{e4}	long	test_flag_0	| call_cond        << 9 | PF              << 18	' CALL PE,nnnn
+	{e5}	long	xy_to_alu	| push_reg         << 9				' PUSH IX/IY
+	{e6}	long	imm8_to_alu	| alu_and          << 9				' AND  imm8
+	{e7}	long	rst								' RST  20
+
+	{e8}	long	test_flag_1	| ret_cond         << 9 | PF              << 18	' RET  PO
+	{e9}	long	xy_to_alu	| alu_to_pc        << 9				' JP   (IX/IY)
+	{ea}	long	test_flag_1	| jp_cond          << 9 | PF              << 18	' JP   PO,nnnn
+	{eb}	long	lmm		| @@@z_ex_de_hl    << 9				' EX   DE,HL
+	{ec}	long	test_flag_1	| call_cond        << 9 | PF              << 18	' CALL PO,nnnn
+	{ed}	long	lmm		| @@@z_ed_xx       << 9				' $ED xx
+	{ee}	long	imm8_to_alu	| alu_xor          << 9				' XOR  imm8
+	{ef}	long	rst								' RST  28
+
+	{f0}	long	test_flag_0	| ret_cond         << 9 | SF              << 18	' RET  P
+	{f1}	long	pop_af								' POP  AF
+	{f2}	long	test_flag_0	| jp_cond          << 9 | SF              << 18	' JP   P,nnnn
+	{f3}	long	lmm		| @@@z_di          << 9				' DI
+	{f4}	long	test_flag_0	| call_cond        << 9 | SF              << 18	' CALL P,nnnn
+	{f5}	long	af_to_alu	| push_reg         << 9				' PUSH AF
+	{f6}	long	imm8_to_alu	| alu_or           << 9				' OR   imm8
+	{f7}	long	rst								' RST  30
+
+	{f8}	long	test_flag_1	| ret_cond         << 9 | SF              << 18	' RET  M
+	{f9}	long	xy_to_alu	| alu_to_sp        << 9				' LD   SP,IX/IY
+	{fa}	long	test_flag_1	| jp_cond          << 9 | SF              << 18	' JP   M,nnnn
+	{fb}	long	lmm		| @@@z_ei          << 9				' EI
+	{fc}	long	test_flag_1	| call_cond        << 9 | SF              << 18	' CALL M,nnnn
+	{fd}	long	lmm		| @@@z_fd_xx       << 9				' $FD xx
+	{fe}	long	imm8_to_alu	| alu_cp           << 9				' CP   imm8
+	{ff}	long	rst								' RST  38
+
+opcodes_cb
+	{00}	word	@@@z_rlc_b				' RLC  B
+	{01}	word	@@@z_rlc_c				' RLC  C
+	{02}	word	@@@z_rlc_d				' RLC  D
+	{03}	word	@@@z_rlc_e				' RLC  E
+	{04}	word	@@@z_rlc_h				' RLC  H
+	{05}	word	@@@z_rlc_l				' RLC  L
+	{06}	word	@@@z_rlc_m				' RLC  (HL)
+	{07}	word	@@@z_rlc_a				' RLC  A
+
+	{08}	word	@@@z_rrc_b				' RRC  B
+	{09}	word	@@@z_rrc_c				' RRC  C
+	{0a}	word	@@@z_rrc_d				' RRC  D
+	{0b}	word	@@@z_rrc_e				' RRC  E
+	{0c}	word	@@@z_rrc_h				' RRC  H
+	{0d}	word	@@@z_rrc_l				' RRC  L
+	{0e}	word	@@@z_rrc_m				' RRC  (HL)
+	{0f}	word	@@@z_rrc_a				' RRC  A
+
+	{10}	word	@@@z_rl_b				' RL   B
+	{11}	word	@@@z_rl_c				' RL   C
+	{12}	word	@@@z_rl_d				' RL   D
+	{13}	word	@@@z_rl_e				' RL   E
+	{14}	word	@@@z_rl_h				' RL   H
+	{15}	word	@@@z_rl_l				' RL   L
+	{16}	word	@@@z_rl_m				' RL   (HL)
+	{17}	word	@@@z_rl_a				' RL   A
+
+	{18}	word	@@@z_rr_b				' RR   B
+	{19}	word	@@@z_rr_c				' RR   C
+	{1a}	word	@@@z_rr_d				' RR   D
+	{1b}	word	@@@z_rr_e				' RR   E
+	{1c}	word	@@@z_rr_h				' RR   H
+	{1d}	word	@@@z_rr_l				' RR   L
+	{1e}	word	@@@z_rr_m				' RR   (HL)
+	{1f}	word	@@@z_rr_a				' RR   A
+
+	{20}	word	@@@z_sla_b				' SLA  B
+	{21}	word	@@@z_sla_c				' SLA  C
+	{22}	word	@@@z_sla_d				' SLA  D
+	{23}	word	@@@z_sla_e				' SLA  E
+	{24}	word	@@@z_sla_h				' SLA  H
+	{25}	word	@@@z_sla_l				' SLA  L
+	{26}	word	@@@z_sla_m				' SLA  (HL)
+	{27}	word	@@@z_sla_a				' SLA  A
+
+	{28}	word	@@@z_sra_b				' SRA  B
+	{29}	word	@@@z_sra_c				' SRA  C
+	{2a}	word	@@@z_sra_d				' SRA  D
+	{2b}	word	@@@z_sra_e				' SRA  E
+	{2c}	word	@@@z_sra_h				' SRA  H
+	{2d}	word	@@@z_sra_l				' SRA  L
+	{2e}	word	@@@z_sra_m				' SRA  (HL)
+	{2f}	word	@@@z_sra_a				' SRA  A
+
+	{30}	word	@@@z_sli_b				' SLI  B
+	{31}	word	@@@z_sli_c				' SLI  C
+	{32}	word	@@@z_sli_d				' SLI  D
+	{33}	word	@@@z_sli_e				' SLI  E
+	{34}	word	@@@z_sli_h				' SLI  H
+	{35}	word	@@@z_sli_l				' SLI  L
+	{36}	word	@@@z_sli_m				' SLI  (HL)
+	{37}	word	@@@z_sli_a				' SLI  A
+
+	{38}	word	@@@z_srl_b				' SRL  B
+	{39}	word	@@@z_srl_c				' SRL  C
+	{3a}	word	@@@z_srl_d				' SRL  D
+	{3b}	word	@@@z_srl_e				' SRL  E
+	{3c}	word	@@@z_srl_h				' SRL  H
+	{3d}	word	@@@z_srl_l				' SRL  L
+	{3e}	word	@@@z_srl_m				' SRL  (HL)
+	{3f}	word	@@@z_srl_a				' SRL  A
+
+	{40}	word	@@@z_bit_n_b				' BIT  0,B
+	{41}	word	@@@z_bit_n_c				' BIT  0,C
+	{42}	word	@@@z_bit_n_d				' BIT  0,D
+	{43}	word	@@@z_bit_n_e				' BIT  0,E
+	{44}	word	@@@z_bit_n_h				' BIT  0,H
+	{45}	word	@@@z_bit_n_l				' BIT  0,L
+	{46}	word	@@@z_bit_n_m				' BIT  0,(HL)
+	{47}	word	@@@z_bit_n_a				' BIT  0,A
+
+	{80}	word	@@@z_res_n_b				' RES  0,B
+	{81}	word	@@@z_res_n_c				' RES  0,C
+	{82}	word	@@@z_res_n_d				' RES  0,D
+	{83}	word	@@@z_res_n_e				' RES  0,E
+	{84}	word	@@@z_res_n_h				' RES  0,H
+	{85}	word	@@@z_res_n_l				' RES  0,L
+	{86}	word	@@@z_res_n_m				' RES  0,(HL)
+	{87}	word	@@@z_res_n_a				' RES  0,A
+
+	{c0}	word	@@@z_set_n_b				' SET  0,B
+	{c1}	word	@@@z_set_n_c				' SET  0,C
+	{c2}	word	@@@z_set_n_d				' SET  0,D
+	{c3}	word	@@@z_set_n_e				' SET  0,E
+	{c4}	word	@@@z_set_n_h				' SET  0,H
+	{c5}	word	@@@z_set_n_l				' SET  0,L
+	{c6}	word	@@@z_set_n_m				' SET  0,(HL)
+	{c7}	word	@@@z_set_n_a				' SET  0,A
+
+opcodes_ed
+	{40}	word	@@@z_in_b_bc				' IN   B,(C)
+	{41}	word	@@@z_out_bc_b				' OUT  (C),B
+	{42}	word	@@@z_sbc_hl_bc				' SBC  HL,BC
+	{43}	word	@@@z_ld_abs16_bc			' LD   (abs16),BC
+	{44}	word	@@@z_neg				' NEG
+	{45}	word	@@@z_retn				' RETN
+	{46}	word	@@@z_im_0				' IM   0
+	{47}	word	@@@z_ld_i_a				' LD   I,A
+
+	{48}	word	@@@z_in_c_bc				' IN   C,(C)
+	{49}	word	@@@z_out_bc_c				' OUT  (C),C
+	{4a}	word	@@@z_adc_hl_bc				' ADC  HL,BC
+	{4b}	word	@@@z_ld_bc_abs16			' LD   BC,(abs16)
+	{4c}	word	@@@z_neg		' undocumented	' NEG
+	{4d}	word	@@@z_reti				' RETI
+	{4e}	word	@@@z_im_0		' undocumented	' IM   0
+	{4f}	word	@@@z_ld_r_a				' LD   R,A
+
+	{50}	word	@@@z_in_d_bc				' IN   D,(C)
+	{51}	word	@@@z_out_bc_d				' OUT  (C),D
+	{52}	word	@@@z_sbc_hl_de				' SBC  HL,DE
+	{53}	word	@@@z_ld_abs16_de			' LD   (abs16),DE
+	{54}	word	@@@z_neg		' undocumented	' NEG
+	{55}	word	@@@z_retn		' undocumented	' RETN
+	{56}	word	@@@z_im_1				' IM   1
+	{57}	word	@@@z_ld_a_i				' LD   A,I
+
+	{58}	word	@@@z_in_e_bc				' IN   E,(C)
+	{59}	word	@@@z_out_bc_e				' OUT  (C),E
+	{5a}	word	@@@z_adc_hl_de				' ADC  HL,DE
+	{5b}	word	@@@z_ld_de_abs16			' LD   DE,(abs16)
+	{5c}	word	@@@z_neg		' undocumented	' NEG
+	{5d}	word	@@@z_reti		' undocumented	' RETI
+	{5e}	word	@@@z_im_2				' IM   2
+	{5f}	word	@@@z_ld_a_r				' LD   A,R
+
+	{60}	word	@@@z_in_h_bc				' IN   H,(C)
+	{61}	word	@@@z_out_bc_h				' OUT  (C),H
+	{62}	word	@@@z_sbc_hl_hl				' SBC  HL,HL
+	{63}	word	@@@z_ld_abs16_hl_2			' LD   (abs16),HL
+	{64}	word	@@@z_neg		' undocumented	' NEG
+	{65}	word	@@@z_retn		' undocumented	' RETN
+	{66}	word	@@@z_im_0		' undocumented	' IM   0
+	{67}	word	@@@z_rrd_m				' RRD  (HL)
+
+	{68}	word	@@@z_in_l_bc				' IN   L,(C)
+	{69}	word	@@@z_out_bc_l				' OUT  (C),L
+	{6a}	word	@@@z_adc_hl_hl				' ADC  HL,HL
+	{6b}	word	@@@z_ld_hl_abs16_2			' LD   HL,(abs16)
+	{6c}	word	@@@z_neg		' undocumented	' NEG
+	{6d}	word	@@@z_reti		' undocumented	' RETI
+	{6e}	word	@@@z_im_0		' undocumented	' IM   0
+	{6f}	word	@@@z_rld_m				' RLD  (HL)
+
+	{70}	word	@@@z_in_0_bc		' undocumented	' IN   (C)
+	{71}	word	@@@z_out_bc_0		' undocumented	' OUT  (C),0
+	{72}	word	@@@z_sbc_hl_sp				' SBC  HL,SP
+	{73}	word	@@@z_ld_abs16_sp			' LD   (abs16),SP
+	{74}	word	@@@z_neg		' undocumented	' NEG
+	{75}	word	@@@z_retn		' undocumented	' RETN
+	{76}	word	@@@z_im_1		' undocumented	' IM   1
+	{77}	word	@@@break		' undocumented	' invalid
+
+	{78}	word	@@@z_in_a_bc				' IN   A,(C)
+	{79}	word	@@@z_out_bc_a				' OUT  (C),A
+	{7a}	word	@@@z_adc_hl_sp				' ADC  HL,SP
+	{7b}	word	@@@z_ld_sp_abs16			' LD   SP,(abs16)
+	{7c}	word	@@@z_neg		' undocumented	' NEG
+	{7d}	word	@@@z_reti		' undocumented	' RETI
+	{7e}	word	@@@z_im_2		' undocumented	' IM   2
+	{7f}	word	@@@break		' undocumented	' invalid
+
+	{80}	word	@@@z_bcde_cnt		' fake opcode	' BCDE = CNT
+	{81}	word	@@@break
+	{82}	word	@@@break
+	{83}	word	@@@break
+	{84}	word	@@@break
+	{85}	word	@@@break
+	{86}	word	@@@break
+	{87}	word	@@@break
+
+	{88}	word	@@@break
+	{89}	word	@@@break
+	{8a}	word	@@@break
+	{8b}	word	@@@break
+	{8c}	word	@@@break
+	{8d}	word	@@@break
+	{8e}	word	@@@break
+	{8f}	word	@@@break
+
+	{90}	word	@@@break
+	{91}	word	@@@break
+	{92}	word	@@@break
+	{93}	word	@@@break
+	{94}	word	@@@break
+	{95}	word	@@@break
+	{96}	word	@@@break
+	{97}	word	@@@break
+
+	{98}	word	@@@break
+	{99}	word	@@@break
+	{9a}	word	@@@break
+	{9b}	word	@@@break
+	{9c}	word	@@@break
+	{9d}	word	@@@break
+	{9e}	word	@@@break
+	{9f}	word	@@@break
+
+	{a0}	word	@@@z_ldi				' LDI
+	{a1}	word	@@@z_cpi				' CPI
+	{a2}	word	@@@z_ini				' INI
+	{a3}	word	@@@z_outi				' OUTI
+	{a4}	word	@@@break
+	{a5}	word	@@@break
+	{a6}	word	@@@break
+	{a7}	word	@@@break
+
+	{a8}	word	@@@z_ldd				' LDD
+	{a9}	word	@@@z_cpd				' CPD
+	{aa}	word	@@@z_ind				' IND
+	{ab}	word	@@@z_outd				' OUTD
+	{ac}	word	@@@break
+	{ad}	word	@@@break
+	{ae}	word	@@@break
+	{af}	word	@@@break
+
+	{b0}	word	@@@z_ldir				' LDIR
+	{b1}	word	@@@z_cpir				' CPIR
+	{b2}	word	@@@z_inir				' INIR
+	{b3}	word	@@@z_otir				' OTIR
+	{b4}	word	@@@break
+	{b5}	word	@@@break
+	{b6}	word	@@@break
+	{b7}	word	@@@break
+
+	{b8}	word	@@@z_lddr				' LDDR
+	{b9}	word	@@@z_cpdr				' CPDR
+	{ba}	word	@@@z_indr				' INDR
+	{bb}	word	@@@z_otdr				' OTDR
+	{bc}	word	@@@break
+	{bd}	word	@@@break
+	{be}	word	@@@break
+	{bf}	word	@@@break
+
+opcodes_xy_cb
+	{00-07}	word	@@@z_rlc_mxy
+	{08-0f}	word	@@@z_rrc_mxy
+	{10-17}	word	@@@z_rl_mxy
+	{18-1f}	word	@@@z_rr_mxy
+	{20-27}	word	@@@z_sla_mxy
+	{28-2f}	word	@@@z_sra_mxy
+	{30-37}	word	@@@z_sli_mxy
+	{38-3f}	word	@@@z_srl_mxy
+	{40-47}	word	@@@z_bit_0_mxy
+	{48-4f}	word	@@@z_bit_1_mxy
+	{50-57}	word	@@@z_bit_2_mxy
+	{58-5f}	word	@@@z_bit_3_mxy
+	{60-67}	word	@@@z_bit_4_mxy
+	{68-6f}	word	@@@z_bit_5_mxy
+	{70-77}	word	@@@z_bit_6_mxy
+	{78-7f}	word	@@@z_bit_7_mxy
+	{80-87}	word	@@@z_res_0_mxy
+	{88-8f}	word	@@@z_res_1_mxy
+	{90-97}	word	@@@z_res_2_mxy
+	{98-9f}	word	@@@z_res_3_mxy
+	{a0-a7}	word	@@@z_res_4_mxy
+	{a8-af}	word	@@@z_res_5_mxy
+	{b0-b7}	word	@@@z_res_6_mxy
+	{b8-bf}	word	@@@z_res_7_mxy
+	{c0-c7}	word	@@@z_set_0_mxy
+	{c8-cf}	word	@@@z_set_1_mxy
+	{d0-d7}	word	@@@z_set_2_mxy
+	{d8-df}	word	@@@z_set_3_mxy
+	{e0-e7}	word	@@@z_set_4_mxy
+	{e8-ef}	word	@@@z_set_5_mxy
+	{f0-f7}	word	@@@z_set_6_mxy
+	{f8-ff}	word	@@@z_set_7_mxy
+
+' ----------------------------------------------------------------------------------------------
+' Table of functions to execute after the DD/FD CB <disp8> xx opcodes
+' The "invalid" opcodes 0-5 and 7 of each set of 8 opcodes acutally execute the same
+' as the #6 slot, i.e. the rotate, shift, bit clear or bit set in (IX/Y+disp8), but the
+' result is also transferred into one of the 8 bit registers afterwards.
+' This is not true for the BIT opcodes, though.
+'
+postop_table
+		word	alu_to_b
+		word	alu_to_c
+		word	alu_to_d
+		word	alu_to_e
+		word	alu_to_h
+		word	alu_to_l
+		word	fetch
+		word	alu_to_a
+
+#ifdef TRS80
+rd_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 0000-0fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 1000-1fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 2000-2fff
+	byte	rd_nop, rd_i_o, rd_kbd, rd_scr	' 3000-3fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 4000-4fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 5000-5fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 6000-6fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 7000-7fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 8000-8fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 9000-9fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' a000-afff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' b000-bfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' c000-cfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' d000-dfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' e000-efff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' f000-ffff
+
+wr_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 0000-0fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 1000-1fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 2000-2fff
+	byte	wr_nop, wr_i_o, wr_nop, wr_scr	' 3000-3fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 4000-4fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 5000-5fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 6000-6fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 7000-7fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 8000-8fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 9000-9fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' a000-afff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' b000-bfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' c000-cfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' d000-dfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' e000-efff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' f000-ffff
+#endif TRS80
+
+#ifdef CGENIE
+rd_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 0000-0fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 1000-1fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 2000-2fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 3000-3fff
+	byte	rd_ram, rd_scr, rd_ram, rd_ram	' 4000-4fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 5000-5fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 6000-6fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 7000-7fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 8000-8fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 9000-9fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' a000-afff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' b000-bfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' c000-cfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' d000-dfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' e000-efff
+	byte	rd_col, rd_fnt, rd_kbd, rd_i_o	' f000-ffff
+
+wr_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 0000-0fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 1000-1fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 2000-2fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 3000-3fff
+	byte	wr_ram, wr_scr, wr_ram, wr_ram	' 4000-4fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 5000-5fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 6000-6fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 7000-7fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 8000-8fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 9000-9fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' a000-afff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' b000-bfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' c000-cfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' d000-dfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' e000-efff
+	byte	wr_col, wr_fnt, wr_nop, wr_i_o	' f000-ffff
+#endif CGENIE
+
+#ifdef NASCOM
+rd_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	rd_rom, rd_rom, rd_scr, rd_ram	' 0000-0fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 1000-1fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 2000-2fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 3000-3fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 4000-4fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 5000-5fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 6000-6fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 7000-7fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 8000-8fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 9000-9fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' a000-afff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' b000-bfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' c000-cfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' d000-dfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' e000-efff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' f000-ffff
+
+wr_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	wr_rom, wr_rom, wr_scr, wr_ram	' 0000-0fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 1000-1fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 2000-2fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 3000-3fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 4000-4fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 5000-5fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 6000-6fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 7000-7fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 8000-8fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 9000-9fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' a000-afff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' b000-bfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' c000-cfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' d000-dfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' e000-efff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' f000-ffff
+#endif NASCOM
+
+#ifdef SPECTRUM
+rd_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 0000-0fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 1000-1fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 2000-2fff
+	byte	rd_rom, rd_rom, rd_rom, rd_rom	' 3000-3fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 4000-4fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 5000-5fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 6000-6fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 7000-7fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 8000-8fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' 9000-9fff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' a000-afff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' b000-bfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' c000-cfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' d000-dfff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' e000-efff
+	byte	rd_ram, rd_ram, rd_ram, rd_ram	' f000-ffff
+
+wr_memory
+	'	x000-x3ff x400-x7ff x800-xbff xc00-xfff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 0000-0fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 1000-1fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 2000-2fff
+	byte	wr_rom, wr_rom, wr_rom, wr_rom	' 3000-3fff
+	byte	wr_scr, wr_scr, wr_scr, wr_scr	' 4000-4fff
+	byte	wr_scr, wr_scr, wr_scr, wr_ram	' 5000-5fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 6000-6fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 7000-7fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 8000-8fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' 9000-9fff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' a000-afff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' b000-bfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' c000-cfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' d000-dfff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' e000-efff
+	byte	wr_ram, wr_ram, wr_ram, wr_ram	' f000-ffff
+#endif SPECTRUM

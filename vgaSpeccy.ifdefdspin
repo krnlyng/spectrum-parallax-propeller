@@ -1,0 +1,549 @@
+CON
+
+#ifdef screen
+#else
+	_xinfreq		= 5_000_000			' Quartz is 5MHz
+	_clkmode		= xtal1 + pll16x		' System clock is 80MHz
+
+PUB main
+	start(16, @screen, @sync,@bordercolour)
+        bordercolour:=0
+
+DAT
+'screen		file    "cabal.scr"
+'screen		file    "wizball.scr"
+screen		file    "jetpac.scr"
+sync		long	0
+
+#endif
+
+DAT
+bordercolour    long    0
+
+CON
+''***************************************
+''*  VGA Spectrum Display Driver v1.0   *
+''*  See end of file for terms of use.  *
+''***************************************
+
+hp = 256	' horizontal pixels
+vp = 384	' vertical pixels
+'hf = 15+20 ' horizontal front porch pixels
+'hs = 20 ' horizontal sync pixels
+'hb = 110-20 ' horizontal back porch pixels
+hf = 42+20         ' horizontal front porch pixels
+hs = 20		' horizontal sync pixels
+hb = 98-20         ' horizontal back porch pixels
+vf = 68	        ' vertical front porch lines
+vs = 3		' vertical sync lines
+vb = 65         ' vertical back porch lines
+hn = 1		' horizontal normal sync state (0|1)
+vn = 1		' vertical normal sync state (0|1)
+pr = 15		' pixel rate
+BORDERSIZE = 30
+
+cols = 32
+rows = 24
+
+VAR long cog[2]
+
+PUB start(BasePin, ScreenPtr, SyncPtr, BordPtr) : okay | i, j
+
+'' Start VGA driver - starts two COGs
+'' returns false if two COGs not available
+''
+''	BasePin = VGA starting pin (0, 8, 16, 24, etc.)
+''
+''	ScreenPtr = Pointer to 256x192 bytes containing a 1bit bitmap image
+''
+''	SyncPtr = Pointer to long which gets written with -1 upon each screen
+''		refresh. May be used to time writes/scrolls, so that chopiness
+''		can be avoided. You must clear it each time if you want to see
+''		it re-trigger.
+
+	' if driver is already running, stop it
+	stop
+
+	' implant pin settings
+	reg_vcfg := $200000FF + (BasePin & %111000) << 6
+	i := $FF << (BasePin & %011000)
+	j := BasePin & %100000 == 0
+	reg_dira := i & j
+	reg_dirb := i & !j
+
+	' implant CNT value to sync COGs to
+	sync_cnt := cnt + $10000
+
+	' implant pointers
+	' implant unique settings and launch first COG
+        borderptr:=BordPtr '@bordercolour
+        screen_base:=ScreenPtr+$400
+        attr_base:=ScreenPtr+$1800
+	vf_lines.byte := vf
+	vb_lines.byte := vb
+	cog[1] := cognew(@d0, SyncPtr) + 1
+
+	' allow time for first COG to launch
+	waitcnt($2000 + cnt)
+
+	' differentiate settings and launch second COG
+        screen_base:=ScreenPtr
+	vf_lines.byte := vf+8
+	vb_lines.byte := vb-8
+	cog[0] := cognew(@d0, SyncPtr) + 1
+
+	' if both COGs launched, return true
+	if cog[0] and cog[1]
+		return true
+	stop
+
+PUB stop | i
+' Stop VGA driver - frees two COGs
+  repeat i from 0 to 1
+         if cog[i]
+         cogstop(cog[i]~ - 1)
+
+PUB setborder(val)
+  bordercolour:=val&7
+
+DAT
+
+'*****************************************************
+'* Assembly language VGA high-resolution text driver *
+'*****************************************************
+'
+' This program runs concurrently in two different COGs.
+'
+' Each COG's program has different values implanted for front-porch lines and
+' back-porch lines which surround the vertical sync pulse lines. This allows
+' timed interleaving of their active display signals during the visible portion
+' of the field scan. Also, they are differentiated so that one COG displays
+' even four-line groups while the other COG displays odd four-line groups.
+'
+' These COGs are launched in the PUB 'start' and are programmed to synchronize
+' their PLL-driven video circuits so that they can alternately prepare sets of
+' four scan lines and then display them. The COG-to-COG switchover is seemless
+' due to two things: exact synchronization of the two video circuits and the
+' fact that all COGs' driven output states get OR'd together, allowing one COG
+' to output lows during its preparatory state while the other COG effectively
+' drives the pins to create the visible and sync portions of its scan lines.
+' During non-visible scan lines, both COGs output together in unison.
+'
+
+			org	0				' set origin to $000 for start of program
+
+d0			long	1 << 9				' d0 always resides here at $000, executes as NOP
+
+' Init I/O registers and sync COGs' video circuits
+
+			mov	dira, reg_dira			' set pin directions
+			mov	dirb, reg_dirb
+			movi	frqa, #(pr / 5) << 2		' set pixel rate
+			mov	vcfg, reg_vcfg			' set video configuration
+			mov	vscl, #1		 	' set video to reload on every pixel
+			waitcnt sync_cnt, colormask		' wait for start value in cnt, add ~1ms
+			movi	ctra, #%00001_110		' COGs in sync! enable PLLs now - NCOs locked!
+			waitcnt sync_cnt, #0			' wait ~1ms for PLLs to stabilize - PLLs locked!
+			mov	vscl, #100			' insure initial WAITVIDs lock cleanly
+
+' Main loop, display field - each COG alternately builds and displays four scan lines
+
+vsync			mov	x, #vs				' do vertical sync lines
+			call	#blank_vsync
+           		xor	hvsync,#$101			' flip vertical sync bits
+
+                        djnz    flashcount,#:skpflsh
+                        mov     flashcount,#45
+:skpflsh
+
+vb_lines		mov	x, #vb				' do vertical back porch lines (# set at runtime)
+			call	#myblank
+
+			mov	screen_ptr, screen_base		' reset screen pointer to upper-left character
+                        mov     attr_ptr,attr_base
+			mov	row, #0				' reset row counter for cursor insertion
+			mov	fours, #rows                    ' set number of 4-line builds for whole screen
+
+			' Build four scan lines into scanbuff
+
+fourline		movd	:pixa, #scanbuff-1		' reset scanbuff address (pre-decremented)
+			movd	:cola, #colorbuff-1		' reset colorbuff address (pre-decremented)
+			movd	:colb, #colorbuff-1
+
+                        cmp     flashcount,#22 wc,wz
+          if_b          mov     :flsh,flashinst0
+          if_ae         mov     :flsh,flashinst1
+
+			mov	screen_ptr, screen_base		' reset screen pointer to upper-left character
+                        mov     y,row
+                        and     y,#7
+                        shl     y,#5
+                        add     screen_ptr,y
+                        mov     y,row
+                        and     y,#3<<3
+                        shl     y,#8
+                        add     screen_ptr,y
+
+			mov	y, #2				' must build scanbuff in two sections because
+			mov	vscl, vscl_line2x		' ..pixel counter is limited to twelve bits
+:halfrow		waitvid underscore, #0			' output lows to let other COG drive VGA pins
+			mov	x, #cols/2			' ..for 2 scan lines, ready for half a row
+
+:column		 	rdbyte	z, screen_ptr			' get character and colors from screen memory
+                        add     screen_ptr,#256
+                        rol     z,#8
+                        rdbyte  fg,screen_ptr
+                        add     screen_ptr,#256
+                        or      z,fg
+                        rdbyte  fg,screen_ptr
+                        add     screen_ptr,#256
+                        rol     z,#8
+                        rdbyte  bg,screen_ptr
+                        or      z,fg
+                        rol     z,#8
+                        or      z,bg
+                        add     screen_ptr,minus768
+                        rev     z,#0
+                        rdbyte  fg,attr_ptr
+                        test    fg,#$80 wz
+:flsh         if_nz     xor     z,flashval
+
+			add	:pixa, d0			' increment scanbuff destination addresses
+			add	screen_ptr, #1			' increment screen memory address
+:pixa			mov	scanbuff, z			' read pixel long (8*4) into scanbuff
+
+                        test    fg,#$40 wz
+                        mov     bg,fg
+                        and     fg,#7
+              if_nz     or      fg,#8
+                        shr     bg,#3
+                        and     bg,#7
+              if_nz     or      bg,#8
+                        add     attr_ptr,#1
+
+			add	fg, #fg_clut			' + offset to foreground CLUT
+			movs	:cola, fg
+			add	:cola, d0
+			add	bg, #bg_clut			' + offset to background CLUT
+			movs	:colb, bg
+			add	:colb, d0
+:cola			mov	colorbuff, 0-0
+:colb			or	colorbuff, 0-0
+
+			djnz	x, #:column			' another character in this half-row?
+
+			djnz	y, #:halfrow			' loop to do 2nd half-row, time for 2nd WAITVID
+
+			sub	screen_ptr, #cols		' back up to start of same row in screen memory
+                        sub     attr_ptr, #cols
+
+			mov	vscl, vscl_line2x		' As we're doubling up the pixels cos we only need 192 y pixels
+                        waitvid underscore, #0			' so we now have 4 scan lines spare, as the we managed to build it
+			mov	vscl, vscl_line2x		' all in the first 4 scan lines of these 8 ( 4*2 fat y pixels )
+                        waitvid underscore, #0
+
+			' Display four scan lines from scanbuff
+			mov	y, #4				' ready for four scan lines
+scanline		jmp	#myscancode			' jump to scanbuff display routine in scancode
+scanret			djnz	y, #scanline			' another scan line?
+
+			' Next group of four scan lines
+			add	screen_ptr, #32		' if new row, advance screen pointer
+			add	attr_ptr, #32		' if new row, advance screen pointer
+			add	row, #1				' if new row, increment row counter
+			djnz	fours, #fourline	 	' another 4-line build/display?
+
+			' Visible section done, do vertical sync front porch lines
+'			wrlong	longmask,par			' write -1 to refresh indicator
+                        mov     x,vf_lines
+                        and     x,#$1ff
+                        cmp     x,#vf wz
+              if_z      wrbyte	ff,par			' write -1 to refresh indicator
+
+vf_lines		mov	x,#vf				' do vertical front porch lines (# set at runtime)
+			call	#myblank
+
+			jmp	#vsync				' new field, loop to vsync
+
+ff long $ff
+
+			' Subroutine - do blank lines
+
+blank_vsync		xor	hvsync,#$101			' flip vertical sync bits
+blank			mov	vscl, #hp		 	' do blank pixels
+			waitvid hvsync, #0
+			mov	vscl, #hf			' do horizontal front porch pixels
+			waitvid hvsync, #0
+                        mov	vscl, #hs			' do horizontal sync pixels
+			waitvid hvsync, #1
+			mov	vscl, #hb			' do horizontal back porch pixels
+			waitvid hvsync, #0
+			djnz	x,#blank			' another line?
+blank_ret
+blank_vsync_ret		ret
+
+getborder               rdbyte  vgaborder,borderptr
+                        and     vgaborder,#7
+			add	vgaborder,#bd_clut			' + offset to foreground CLUT
+			movs	:getbord, vgaborder
+                        nop
+:getbord                mov     vgaborder,0-0
+getborder_ret           ret
+
+myblank			mov	vscl, #hp	 	' do blank pixels
+                        mov     flg,vf_lines
+                        and     flg,#511
+                        cmp     flg,#vf wz
+         if_nz          waitvid hvsync, #0
+                        call    #getborder
+	 if_z		waitvid vgaborder, #0
+       			mov	vscl, #BORDERSIZE	 	' do blank pixels
+			waitvid vgaborder, #0
+			mov	vscl, #hf-BORDERSIZE		' do horizontal front porch pixels
+			waitvid hvsync, #0
+                        mov	vscl, #hs			' do horizontal sync pixels
+			waitvid hvsync, #1
+			mov	vscl, #hb-BORDERSIZE		' do horizontal back porch pixels
+			waitvid hvsync, #0
+			mov	vscl, #BORDERSIZE
+			waitvid vgaborder, #0
+			djnz	x,#myblank			' another line?
+myblank_ret             ret
+
+myscancode              mov	vscl, vscl_chr			' set pixel rate for characters
+			waitvid colorbuff+0, scanbuff+0
+			waitvid colorbuff+1, scanbuff+1
+			waitvid colorbuff+2, scanbuff+2
+			waitvid colorbuff+3, scanbuff+3
+			waitvid colorbuff+4, scanbuff+4
+			waitvid colorbuff+5, scanbuff+5
+			waitvid colorbuff+6, scanbuff+6
+			waitvid colorbuff+7, scanbuff+7
+
+			waitvid colorbuff+8, scanbuff+8
+			waitvid colorbuff+9, scanbuff+9
+			waitvid colorbuff+10, scanbuff+10
+			waitvid colorbuff+11, scanbuff+11
+			waitvid colorbuff+12, scanbuff+12
+			waitvid colorbuff+13, scanbuff+13
+			waitvid colorbuff+14, scanbuff+14
+			waitvid colorbuff+15, scanbuff+15
+
+			waitvid colorbuff+16, scanbuff+16
+			waitvid colorbuff+17, scanbuff+17
+			waitvid colorbuff+18, scanbuff+18
+			waitvid colorbuff+19, scanbuff+19
+			waitvid colorbuff+20, scanbuff+20
+			waitvid colorbuff+21, scanbuff+21
+			waitvid colorbuff+22, scanbuff+22
+			waitvid colorbuff+23, scanbuff+23
+
+			waitvid colorbuff+24, scanbuff+24
+			waitvid colorbuff+25, scanbuff+25
+			waitvid colorbuff+26, scanbuff+26
+			waitvid colorbuff+27, scanbuff+27
+			waitvid colorbuff+28, scanbuff+28
+			waitvid colorbuff+29, scanbuff+29
+			waitvid colorbuff+30, scanbuff+30
+			waitvid colorbuff+31, scanbuff+31
+
+			mov	vscl, #BORDERSIZE
+			waitvid vgaborder, #0
+			mov	vscl, #hf-BORDERSIZE
+			waitvid hvsync, #0
+	                mov 	vscl, #hs			' do horizontal sync pixels
+			waitvid hvsync, #1			' #1 makes hsync active
+			mov	vscl, #hb-BORDERSIZE		' do horizontal back porch pixels
+			waitvid hvsync, #0			' #0 makes hsync inactive
+			mov	vscl, #BORDERSIZE
+			waitvid vgaborder, #0
+
+                        mov	vscl, vscl_chr			' set pixel rate for characters
+			waitvid colorbuff+0, scanbuff+0
+			shr	scanbuff+0, #8
+			waitvid colorbuff+1, scanbuff+1
+			shr	scanbuff+1, #8
+			waitvid colorbuff+2, scanbuff+2
+			shr	scanbuff+2, #8
+			waitvid colorbuff+3, scanbuff+3
+			shr	scanbuff+3, #8
+			waitvid colorbuff+4, scanbuff+4
+			shr	scanbuff+4, #8
+			waitvid colorbuff+5, scanbuff+5
+			shr	scanbuff+5, #8
+			waitvid colorbuff+6, scanbuff+6
+			shr	scanbuff+6, #8
+			waitvid colorbuff+7, scanbuff+7
+			shr	scanbuff+7, #8
+
+			waitvid colorbuff+8, scanbuff+8
+			shr	scanbuff+8, #8
+			waitvid colorbuff+9, scanbuff+9
+			shr	scanbuff+9, #8
+			waitvid colorbuff+10, scanbuff+10
+			shr	scanbuff+10, #8
+			waitvid colorbuff+11, scanbuff+11
+			shr	scanbuff+11, #8
+			waitvid colorbuff+12, scanbuff+12
+			shr	scanbuff+12, #8
+			waitvid colorbuff+13, scanbuff+13
+			shr	scanbuff+13, #8
+			waitvid colorbuff+14, scanbuff+14
+			shr	scanbuff+14, #8
+			waitvid colorbuff+15, scanbuff+15
+			shr	scanbuff+15, #8
+
+			waitvid colorbuff+16, scanbuff+16
+			shr	scanbuff+16, #8
+			waitvid colorbuff+17, scanbuff+17
+			shr	scanbuff+17, #8
+			waitvid colorbuff+18, scanbuff+18
+			shr	scanbuff+18, #8
+			waitvid colorbuff+19, scanbuff+19
+			shr	scanbuff+19, #8
+			waitvid colorbuff+20, scanbuff+20
+			shr	scanbuff+20, #8
+			waitvid colorbuff+21, scanbuff+21
+			shr	scanbuff+21, #8
+			waitvid colorbuff+22, scanbuff+22
+			shr	scanbuff+22, #8
+			waitvid colorbuff+23, scanbuff+23
+			shr	scanbuff+23, #8
+
+			waitvid colorbuff+24, scanbuff+24
+			shr	scanbuff+24, #8
+			waitvid colorbuff+25, scanbuff+25
+			shr	scanbuff+25, #8
+			waitvid colorbuff+26, scanbuff+26
+			shr	scanbuff+26, #8
+			waitvid colorbuff+27, scanbuff+27
+			shr	scanbuff+27, #8
+			waitvid colorbuff+28, scanbuff+28
+			shr	scanbuff+28, #8
+			waitvid colorbuff+29, scanbuff+29
+			shr	scanbuff+29, #8
+			waitvid colorbuff+30, scanbuff+30
+			shr	scanbuff+30, #8
+			waitvid colorbuff+31, scanbuff+31
+			shr	scanbuff+31, #8
+
+			mov	vscl, #BORDERSIZE
+			waitvid vgaborder, #0
+                        call    #getborder
+			mov	vscl, #hf-BORDERSIZE
+			waitvid hvsync, #0
+			mov	vscl, #hs			' do horizontal sync pixels
+			waitvid hvsync, #1			' #1 makes hsync active
+			mov	vscl, #hb-BORDERSIZE		' do horizontal back porch pixels
+			waitvid hvsync, #0			' #0 makes hsync inactive
+			mov	vscl, #BORDERSIZE
+			waitvid vgaborder, #0
+
+			jmp	#scanret
+
+flashinst0    if_nz     xor     z,flashval
+flashinst1              nop
+flashcount              long    120
+
+
+			' Data
+
+d0s0			long	1 << 9 + 1
+d1                      long	1 << 10
+
+reg_dira		long	0				' set at runtime
+reg_dirb		long	0				' set at runtime
+reg_vcfg		long	0				' set at runtime
+sync_cnt		long	0				' set at runtime
+
+minus768                long    -768
+
+screen_base		long	0				' set at runtime (3 contiguous longs)
+attr_base               long    0                               ' set at runtime
+borderptr               long    0
+
+flashval                long    $ffffffff
+
+vscl_line		long	hp + hf + hs + hb		' total number of pixels per scan line
+vscl_line2x		long	(hp + hf + hs + hb) * 2 	' total number of pixels per 2 scan lines
+vscl_chr		long	1 << 12 + 8			' 1 clock per pixel and 8 pixels per set
+colormask		long	$FCFC				' mask to isolate R,G,B bits from H,V
+longmask		long	$FFFFFFFF			' all bits set
+underscore		long	$FFFF0000			' underscore cursor pattern
+hv			long	(hn << 1 + vn) * $0101			' -H,-V states
+hvsync			long	((hn << 1 + vn) * $0101) ^ $200		' +/-H,-V states
+
+vgaborder		long	$0f
+
+bg_clut			long	%00000011_00000011		' black
+			long	%00000011_00001011		' dark blue
+			long	%00000011_10000011		' dark red
+			long	%00000011_10001011		' dark magenta
+			long	%00000011_00100011		' dark green
+			long	%00000011_00101011		' dark cyan
+			long	%00000011_10100011		' dark yellow
+			long	%00000011_10101011		' dark white
+bd_clut			long	%00000011_00000011		' black
+			long	%00000011_00001111		' light blue
+			long	%00000011_11000011		' light red
+                        long	%00000011_11001111		' light magenta
+			long	%00000011_00110011		' light green
+			long	%00000011_00111111		' light cyan
+			long	%00000011_11110011		' light yellow
+			long	%00000011_11111111		' light white
+
+fg_clut			long	%00000011_00000011		' black
+			long	%00001011_00000011		' dark blue
+			long	%10000011_00000011		' dark red
+			long	%10001011_00000011		' dark magenta
+			long	%00100011_00000011		' dark green
+			long	%00101011_00000011		' dark cyan
+			long	%10100011_00000011		' dark yellow
+			long	%10101011_00000011		' dark white
+			long	%00000011_00000011		' black
+			long	%00001111_00000011		' blue
+			long	%11000011_00000011		' red
+			long	%11001111_00000011		' magenta
+			long	%00110011_00000011		' green
+			long	%00111111_00000011		' cyan
+			long	%11110011_00000011		' yellow
+			long	%11111111_00000011		' white
+
+			' Uninitialized data
+
+screen_ptr		res	1
+attr_ptr                res     1
+
+x			res	1
+y			res	1
+z			res	1
+fg			res	1
+bg			res	1
+
+row			res	1
+fours			res	1
+
+flg                     res     1
+
+scanbuff                res     32
+colorbuff               res     32
+
+			fit	$1f0
+
+{{
++------------------------------------------------------------------------------------------------------------------------------+
+|				    TERMS OF USE: Parallax Object Exchange License					       |
++------------------------------------------------------------------------------------------------------------------------------+
+|Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation    |
+|files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,    |
+|modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software|
+|is furnished to do so, subject to the following conditions:                                                                   |
+|                                                                                                                              |
+|The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.|
+|                                                                                                                              |
+|THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE	       |
+|WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR         |
+|COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,   |
+|ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                         |
++------------------------------------------------------------------------------------------------------------------------------+
+}}

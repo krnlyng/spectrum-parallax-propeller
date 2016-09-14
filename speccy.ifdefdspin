@@ -1,0 +1,1008 @@
+'******************************************************************************
+'*  speccy.spin - had to merge io.spin into speccy.spin, for access to qz80 from within IO
+'*
+'*  (c) Juergen Buchmueller <pullmoll@t-online.de>
+'*
+'* $Id: cpm.spin,v 1.2 2010-04-07 19:33:59 pm Exp $
+'******************************************************************************
+
+CON
+	_xinfreq		= 5_000_000		' Quartz is 5MHz
+'	_xinfreq		= 6_500_000		' Quartz is 6.5MHz
+	_clkmode		= xtal1 + pll16x	' System clock is 80MHz/96MHz
+
+'' Define if you want to run this on the TriBladeProp #2,
+'' on the RamBladeProp or on the DracBladeProp
+'#define TriBladeProp
+'#define RamBladeProp
+'#define DracBladeProp
+
+#define Spectrum
+#define port16
+
+' Select your video norm
+'#define NTSC
+#define PAL
+
+' Uncomment to have debug code inserted
+'#define DEBUG
+
+' Uncomment to emulate interrupts (NMI and IRQ)
+#define INTERRUPTS
+
+' Uncomment to count R register
+#define COUNT_R
+
+#ifdef TriBladeProp
+' serial I/O pins on the TriBladeProp #2
+	SI			= 31
+	SO			= 30
+	SI2			= -1
+	SO2			= -1
+' Keyboard pins
+#define HAVE_KBD
+	kbDpin			= 26
+	kbCpin			= 27
+' SD pins on the TriBladeProp #2
+#define HAVE_SD
+	doPin			= 9
+	clkPin			= 28
+	diPin			= 8
+	csPin			= 14
+' VGA pins on the TriBladeProp #2 - none?
+#undef  HAVE_VGA
+	vgaPin			= 16
+#endif TriBladeProp
+
+#ifdef RamBladeProp
+' serial I/O pins on the RamBladeProp (secondary?)
+	SI			= 23
+	SO			= 22
+	SI2			= -1
+	SO2			= -1
+' Keyboard pins
+#undef HAVE_KBD
+	kbDpin			= -1
+	kbCpin			= -1
+' microSD pins on RamBladeProp
+#define HAVE_SD
+	doPin			= 24
+	clkPin			= 26
+	diPin			= 25
+	csPin			= 19
+' VGA pins on the RamBladeProp - none
+	vgaPin			= -1
+#undef  HAVE_VGA
+' TV pins on the RamBladeProp - none
+#undef  HAVE_TV
+	tvPin			= -1
+#endif RamBladeProp
+
+#ifdef DracBladeProp
+' serial I/O pins on the DracBladeProp
+	SI			= 31
+	SO			= 30
+	SI2			= 25
+	SO2			= 24
+' Keyboard pins
+#define HAVE_KBD
+	kbDpin			= 26
+	kbCpin			= 27
+' SD pins on the DracBladeProp
+#define HAVE_SD
+	doPin			= 7 ' krnlyngs pins
+	clkPin			= 6
+	diPin			= 5
+	csPin			= 4
+' VGA pins on the DracBladeProp - 16-23
+#define HAVE_VGA
+	vgaPin			= 16
+' VGA pins on the DracBladeProp - 16-23
+'#undef HAVE_TV
+	tvPin			= 18
+#endif DracBladeProp
+
+'******************************************************************************
+'*  io.spin - handle input, output and break requests sent by qz80
+'*
+'*  (c) Juergen Buchmueller <pullmoll@t-online.de>
+'*
+'* $Id: io.spin,v 1.30 2010-04-07 19:33:59 pm Exp $
+'******************************************************************************
+
+' Define this to check for contiguous image files
+#define CHECK_CONTIG
+
+' Define this to make 128 byte record writes pending for 1 second
+'#define TIMED_FLUSH
+
+        io_cmd_out              =       $01             ' I/O emulator command output
+        io_cmd_in               =       $02             ' I/O emulator command input
+        io_cmd_break            =       $03             ' I/O emulator command break
+
+VAR
+
+	byte	xpins[12]
+	long	params[3]
+#ifdef INTERRUPTS
+	long	irq
+#endif INTERRUPTS
+
+        long    cog
+        long    io_command
+        byte    name[12+1]
+        byte    datetime[20+1]
+        byte    scrx,scry
+        byte    scrcol
+        byte    sna_header[27]
+
+        word    filesel
+        word    fileoff
+        word    numfiles
+        word    padding
+        byte    selname[12+4]
+
+OBJ
+        fat     : "fatfs"
+
+#ifdef HAVE_KBD
+        kbd     : "Speccy_Keyboard"
+#endif HAVE_KBD
+#ifdef HAVE_TV
+        tv80    : "tv80"
+#endif
+#ifdef HAVE_VGA
+        vga     : "vgaSpeccy"
+#endif HAVE_VGA
+
+        qz80	: "qz80"
+
+PUB go | okay
+        scrcol := $38
+
+	xpins[ 0] := SI
+	xpins[ 1] := SO
+	xpins[ 2] := SI2
+	xpins[ 3] := SO2
+	xpins[ 4] := doPin
+	xpins[ 5] := clkPin
+	xpins[ 6] := diPin
+	xpins[ 7] := csPin
+	xpins[ 8] := kbDpin
+	xpins[ 9] := kbCpin
+	xpins[10] := vgaPin
+	xpins[11] := tvPin
+        okay := start(@xpins) ', @irq)
+
+PUB start(pins) : okay | i, j, irqptr
+        stop
+
+        irqptr:=@irq
+
+        waitcnt(CNT + clkfreq * 2)
+
+        okay := \fat.start(byte[pins][4], byte[pins][5], byte[pins][6], byte[pins][7])
+        if okay < 0
+                return -1
+        iobuff_ptr:=fat.get_memory
+
+        str(string("QZ80 - Quick Z80...",13,10))
+
+#ifdef HAVE_KBD
+        if byte[pins][8] == $ff or byte[pins][9] == $ff
+                return -1
+        okay := \kbd.startx(byte[pins][8], byte[pins][9], %100, 40)
+        if okay < 0
+                return -1
+#endif
+
+#ifdef HAVE_VGA
+        if byte[pins][10] == $ff
+                return -1
+        okay := \vga.start(byte[pins][10], @screen, irqptr,@border)
+        if okay > 0
+                return -1
+#endif
+
+#ifdef HAVE_TV
+        if byte[pins][11] == $ff
+                return -1
+        tv80.start(byte[pins][11], @entry)
+#endif
+'{
+        waitcnt((clkfreq*2)+cnt)   'wait while VGA syncs, so I can see it on the monitor before it runs Z80
+'}
+#ifdef HAVE_TV
+        tv_command := tv80.get_command
+#endif
+
+        IO_Handler_Start
+'        okay := cog := COGNEW(io_handler, @io_stack) + 1
+
+        okay := fat.mount
+        if okay < 0
+          failure(string("FAT mount"),okay)
+          return
+
+        read_Speccy_rom(string("SPECTRUM.ROM"))
+
+        repeat
+
+          i:=SelectFile
+          if i==1
+            PlaySpeccyGame(@selname)
+          if i==2
+            GotoBasic
+
+con
+	dent_name		=	$00		' filename
+	dent_ext		=	$08		' extension
+	dent_attr		=	$0b		' file attributes
+	dent_attr_VSE		=	$0f		' attribute of long filename entries
+	dent_bytes		=	$20		' bytes per directory entry
+
+var
+	byte	cde[dent_bytes]				' current directory entry
+
+PUB SelectFile : retval | b,k
+  stop_QZ80
+  box(8,8,16,8,$00)
+  repeat
+    ScanFiles(fileoff,filesel)
+    read_Speccy_SNA_screen(@selname)
+    box(8,8,16,8,$09)
+'    box(9,9,14,6,$00)
+    DisplayFiles(fileoff,filesel)
+    b:=0
+    repeat while (b==0)
+      k:=kbd.keyvals(8)
+      if k&4
+        if filesel>fileoff
+          filesel--
+          b:=1
+        else
+          if fileoff
+            fileoff--
+            filesel--
+            b:=1
+      if k&8
+        if filesel<(numfiles-1)
+          if filesel<fileoff+5
+            if filesel<(numfiles-1)
+              filesel++
+              b:=1
+          else
+            if fileoff<(numfiles-1)
+              fileoff++
+              filesel++
+              b:=1
+      k:=kbd.keyvals(9)
+      if k&1
+        if fileoff<6
+          fileoff:=0
+          filesel:=fileoff
+          b:=1
+        else
+          fileoff-=6
+          filesel-=6
+          b:=1
+      if k&2
+        if fileoff<(numfiles-12)
+          fileoff+=6
+          filesel+=6
+          if filesel>(numfiles-2)
+            filesel:=numfiles-1
+          b:=1
+        else
+          fileoff:=numfiles-6
+          filesel:=numfiles-1
+          if fileoff<0
+            fileoff:=0
+          b:=1
+      if kbd.keyvals(6)&1
+        return 1
+      if kbd.keyvals(7)&16
+        return 2
+
+
+PUB DisplayFiles(starting,selected) | rec, fnum
+  fnum:=0
+  numfiles:=0
+  rec := fat.opendir(@cde)
+  if rec < 0
+    scrx:=0
+    scry:=0
+    scrcol:=7
+    return -1
+  repeat
+    if cde[dent_name] <> $e5		' deleted entry?
+      if cde[dent_attr] <> dent_attr_vse	' VFAT entry?
+	\fat.get_dent_name(@cde, @name)
+	if cde[dent_ext]=="S" and cde[dent_ext+1]=="N" and cde[dent_ext+2]=="A"
+          numfiles++
+          if fnum=>starting and fnum<starting+6
+            scrx:=9
+            scry:=9+(fnum-starting)
+            scrcol:=7
+            if fnum==selected
+              scrcol:=2
+              bytemove(@selname,@name,13)
+            box(9,9+(fnum-starting),14,1,$00)
+            str(@name)
+          fnum++
+    rec := fat.readdir(rec, @cde)
+    if rec < 0
+      scrx:=0
+      scry:=0
+      scrcol:=7
+      return
+
+PUB ScanFiles(starting,selected) | rec, fnum
+  fnum:=0
+  numfiles:=0
+  rec := fat.opendir(@cde)
+  if rec < 0
+    return -1
+  repeat
+    if cde[dent_name] <> $e5		' deleted entry?
+      if cde[dent_attr] <> dent_attr_vse	' VFAT entry?
+	\fat.get_dent_name(@cde, @name)
+	if cde[dent_ext]=="S" and cde[dent_ext+1]=="N" and cde[dent_ext+2]=="A"
+          numfiles++
+          if fnum=>starting and fnum<starting+6
+            if fnum==selected
+              bytemove(@selname,@name,13)
+          fnum++
+    rec := fat.readdir(rec, @cde)
+    if rec < 0
+      return
+
+PUB box(x,y,w,h,c) | y1,a
+  a:=@attrs[(y<<5)+x]
+  repeat y1 from 0 to h-1
+    bytefill(a,c,w)
+    a+=32
+
+PUB GotoBasic
+  stop_QZ80
+
+  params[0] := command_addr
+#ifdef INTERRUPTS
+  params[1] := @irq
+#endif INTERRUPTS
+  params[2] := getscrptr
+
+  \qz80.start(@params,$0)
+
+  repeat while (kbd.keyvals(8)&1)==0
+  repeat while (kbd.keyvals(8)&1)==1
+
+PUB PlaySpeccyGame(fnam)
+  stop_QZ80
+  read_Speccy_SNA(fnam)
+  start_QZ80
+
+  repeat while (kbd.keyvals(8)&1)==0
+  repeat while (kbd.keyvals(8)&1)==1
+
+PUB stop_QZ80
+        qz80.stop
+
+PUB start_QZ80 | okay
+'        stop_QZ80
+
+	params[0] := command_addr
+#ifdef INTERRUPTS
+	params[1] := @irq
+#endif INTERRUPTS
+        params[2] := getscrptr
+
+        qz80.setSNAregs(@sna_header)
+        setborder(gword(@sna_header+26)&7)
+        qz80.setSP(gword(@sna_header+23)+2)
+	okay := \qz80.start(@params,getsnapc)
+	if okay < 0
+	  str(string("qz80 failed: "))
+	  dec(okay)
+	  crlf
+
+        return 0
+
+
+PUB gword (ptr) : v
+  return byte[ptr]+(byte[ptr+1]<<8)
+
+PUB setborder(col)
+  vga.setborder(col)
+
+PUB setbasic | okay,i
+  okay:=0
+  repeat i from 0 to $200
+    fat.write_xmm_ram(@okay,$5c00,1)
+  okay:=$5fff
+  fat.write_xmm_ram(@okay,$5cb4,2) 'pramt
+  fat.write_xmm_ram(@okay,$5c7b,2) 'udg
+  okay:=$20
+  fat.write_xmm_ram(@okay,$5c38,2) 'rasp
+
+PRI read_Speccy_64K(fname_ptr) | dent, size, sec,i
+        str(string("Loading "))
+        str(fname_ptr)
+        crlf
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+'        success(fname_ptr)
+        size := fat.get_dent_size(dent)
+        sec := fat.get_dent_first_sector(dent)
+        repeat i from 0 to $7f
+          fat.read_sector(sec+i)
+          fat.write_xmm_ram(iobuff_ptr, i*$200, $200)
+        str(string("Loaded ok"))
+        crlf
+
+PRI read_Speccy_48K(fname_ptr) | dent, size, sec,i
+        str(string("Loading "))
+        str(fname_ptr)
+        crlf
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+'        success(fname_ptr)
+        size := fat.get_dent_size(dent)
+        sec := fat.get_dent_first_sector(dent)
+        repeat i from $0 to $5f
+          fat.read_sector(sec+i)
+          fat.write_xmm_ram(iobuff_ptr, $4000+i*$200, $200)
+        str(string("Loaded ok"))
+        crlf
+
+PRI read_Speccy_SNA(fname_ptr) | dent, size, sec,i
+        str(string("Loading "))
+        str(fname_ptr)
+        crlf
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+'        success(fname_ptr)
+        size := fat.get_dent_size(dent)
+        sec := fat.get_dent_first_sector(dent)
+        repeat i from $0 to $60
+          fat.read_sector(sec+i)
+          if i==0
+            bytemove(@sna_header,iobuff_ptr,27)
+            fat.write_xmm_ram(iobuff_ptr+27, $4000, $200-27)
+          elseif i==$60
+            fat.write_xmm_ram(iobuff_ptr, $10000-27, 27)
+          else
+            fat.write_xmm_ram(iobuff_ptr, ($4000-27)+(i*$200),$200)
+        str(string("Loaded ok"))
+        crlf
+        fat.read_xmm_ram(@screen,$4000,$1b00)
+
+PRI read_Speccy_SNA_screen(fname_ptr) | dent, size, sec,i
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+        size := fat.get_dent_size(dent)
+        sec := fat.get_dent_first_sector(dent)
+        repeat i from $0 to $0d
+          fat.read_sector(sec+i)
+          if i==0
+            bytemove(@screen,iobuff_ptr+27,$200-27)
+          elseif i==$0d
+            bytemove(@screen+$1a00-27,iobuff_ptr, $100+27)
+          else
+            bytemove(@screen-27+(i*$200),iobuff_ptr, $200)
+
+PRI read_Speccy_bin(fname_ptr) | dent, size, sec,i
+        str(string("Loading "))
+        str(fname_ptr)
+        crlf
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+        success(fname_ptr)
+        size := fat.get_dent_size(dent)
+        sec := fat.get_dent_first_sector(dent)
+        repeat i from $0 to size/$200
+          fat.read_sector(sec+i)
+          fat.write_xmm_ram(iobuff_ptr, $8000+i*$200, $200)
+        str(string("Loaded ok"))
+        crlf
+
+dat dotz80buf byte 0[30+2]
+
+PRI read_Speccy_z80(fname_ptr) | dent, size, sec,i,j,ptr
+        str(string("Loading "))
+        str(fname_ptr)
+        crlf
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+        success(fname_ptr)
+        size := fat.get_dent_size(dent)
+        dotz80sec := fat.get_dent_first_sector(dent)
+        hex(dotz80sec,8)
+        repeat i from 0 to 29
+          dotz80buf[i]:=getz80byte
+        decompz80
+        str(string("Loaded ok"))
+        crlf
+
+pri decompz80 | ptr,i,j,k
+  ptr:=$4000
+  repeat while ptr<$10000
+    j:=getz80byte
+    fat.write_xmm_ram(@j,ptr,1)
+    if j==$ED
+      j:=getz80byte
+      if j==$ED
+        k:=getz80byte
+        j:=getz80byte
+        repeat i from 0 to k-1
+          fat.write_xmm_ram(@j,ptr++,1)
+      else
+        ptr++
+        fat.write_xmm_ram(@j,ptr++,1)
+    else
+      ptr++
+  fat.read_xmm_ram(@screen,$4000,$1b00)
+
+dat
+dotz80ptr long 512
+dotz80sec long 0
+
+pub getz80byte : val
+  if dotz80ptr>511
+    fat.read_sector(dotz80sec++)
+    str(string("."))
+    dotz80ptr:=0
+  val:=iobuff_ptr[dotz80ptr++]
+  hex(val,2)
+  chr(",")
+  return val
+
+pub getloadptr : ptr
+  return @dotz80buf
+
+pub getloadpc : ptr
+  return byte[@dotz80buf][6]+(byte[@dotz80buf][7]<<8)
+
+pub getsnapc : ptr
+  ptr:=sna_header[23]+(sna_header[24]<<8)
+  fat.read_xmm_ram(@dotz80buf,ptr,2)
+  return word[@dotz80buf]
+
+pub getsnaptr : ptr
+  return @sna_header
+
+pub getscrptr : ptr
+  return @screen
+
+PUB stop
+'' Stop CPU simulator - frees a cog
+  if cog
+    cogstop(cog~ - 1)
+
+
+PUB chr(ch) | i,scrp
+'' Transmit a character to the first SIO object
+'       fdx.tx(0,ch)
+  if ch==13
+    scrx:=0
+    return
+  if ch==10
+    scry++
+    if scry>23
+      scry:=23
+      scroll
+      return
+  if ch<32 or ch>127
+    return
+  scrp:=scrx+((scry&7)<<5)+((scry&24)<<8)
+  ch:=(ch-32)<<3
+  REPEAT i from 0 to 7
+    screen[scrp]:=romfont[ch++]
+    scrp+=256
+  attrs[scry<<5+scrx]:=scrcol
+  scrx++
+  if scrx>31
+    scrx:=0
+    scry++
+    if scry>23
+      scry:=23
+      scroll
+
+pub scroll | i
+  repeat i from 0 to 7
+    bytemove(@screen+$0000+(i<<8),@screen+$0020+(i<<8),224)
+    bytemove(@screen+$00e0+(i<<8),@screen+$0800+(i<<8), 32)
+    bytemove(@screen+$0800+(i<<8),@screen+$0820+(i<<8),224)
+    bytemove(@screen+$08e0+(i<<8),@screen+$1000+(i<<8), 32)
+    bytemove(@screen+$1000+(i<<8),@screen+$1020+(i<<8),224)
+    bytefill(@screen+$10e0+(i<<8),0, 32)
+
+dat
+romfont file "48font.rom"
+
+PUB str(str_ptr) | i
+'' Print a NUL terminated string
+        repeat i from 0 to strsize(str_ptr)-1
+                chr(byte[str_ptr][i])
+
+PUB crlf
+'' Print carriage return and line feed
+        chr(13)
+        chr(10)
+
+PUB dec(value) | _i
+'' Print a decimal number
+        if value < 0
+                -value
+                chr("-")
+
+        _i := 1_000_000_000
+
+        repeat 10
+                if value => _i
+                        chr(value / _i + "0")
+                        value //= _i
+                        result~~
+                elseif result or _i == 1
+                        chr("0")
+                _i /= 10
+
+PUB dec_size(value)
+'' Print a (short) file or image size value
+        if value > 1048576
+                dec(value/1048576)
+                chr(".")
+                dec(10*(value // 1048576) / 1048576)
+                str(string("MB"))
+        elseif value > 1024
+                dec(value/1024)
+                chr(".")
+                dec(10*(value // 1024) / 1024)
+                str(string("KB"))
+        else
+                dec(value)
+
+PUB hex(value, digits)
+'' Print a hexadecimal number
+        value <<= (8 - digits) << 2
+        repeat digits
+                chr(lookupz((value <-= 4) & $F : "0".."9", "A".."F"))
+
+PUB bin(value, digits)
+'' Print a binary number
+        value <<= 32 - digits
+        repeat digits
+                chr((value <-= 1) & 1 + "0")
+
+PRI failure(who, val)
+        str(who)
+        str(string(" failed: "))
+        dec(val)
+        crlf
+
+PRI success(who) | i, n, n1, n2, n3, n4, n5, n6, n7
+        str(who)
+        str(string(" initialized, "))
+        dec(free_cogs)
+        str(string(" cogs free.", 13, 10))
+
+PUB free_cogs : free | i, cogs[8], jmp_0
+        jmp_0 := %010111_0001_1111_000000000_000000000
+        repeat while (cogs[free] := cognew(@jmp_0, 0)) => 0 
+                free++
+        if free
+                repeat i from 0 to free - 1
+                        cogstop(cogs[i])
+        return free
+
+PRI read_Speccy_rom(fname_ptr) | dent, size, sec,i
+        str(string("Loading "))
+        str(fname_ptr)
+        crlf
+        dent := fat.find_file(fname_ptr)
+        if dent == 0
+          failure(fname_ptr,dent)
+          return -1
+        size := fat.get_dent_size(dent)
+        sec := fat.get_dent_first_sector(dent)
+        repeat i from 0 to $1f
+          fat.read_sector(sec+i)
+          fat.write_xmm_ram(iobuff_ptr, i*$200, $200)
+        str(string("Loaded ok"))
+        crlf
+
+PUB command_addr
+'' Return the address of the 3 longs block
+        return @io_command
+
+PUB IO_Handler_Start
+  if(IO_cog)
+    cogstop(IO_cog-1)
+  io_comm_ptr:=@io_command
+  io_bord_ptr:=@border
+  io_states_ptr:=kbd.get_states_ptr
+  IO_cog := cognew(@io_done,0)+1
+
+DAT
+
+IO_cog  long 0
+
+        ORG 0
+IO_Handler_ASM
+io_done rdlong io_comm,io_comm_ptr
+        and   io_comm,x00ffffff
+        wrlong io_comm,io_comm_ptr
+
+io_loop rdlong io_comm,io_comm_ptr
+        mov   io_cmd,io_comm
+        shr   io_cmd,#24 wz
+  if_z  jmp   #io_loop
+
+        mov   io_port,io_comm
+        shr   io_port,#8
+        and   io_port,xffff
+        cmp   io_cmd,#io_cmd_out wz
+  if_z  jmp   #do_io_out
+        cmp   io_cmd,#io_cmd_in wz
+  if_z  jmp   #do_io_in
+        cmp   io_cmd,#io_cmd_break wz
+  if_z  jmp   #do_io_break
+        jmp   #io_done
+
+do_io_break
+':ina255
+'        wrlong io_data,io_bord_ptr
+'        xor   io_data,#3
+'        jmp   #:ina255
+        jmp   #io_done
+
+do_io_out
+        and   io_port,#255
+        cmp   io_port,#254 wz
+  if_z  and   io_comm,#7
+  if_z  wrbyte io_comm,io_bord_ptr
+        jmp   #io_done
+
+do_io_in
+        mov   io_data,#0
+        mov   io_tmp,io_port
+        and   io_tmp,#255
+        cmp   io_tmp,#255 wz
+  if_z  mov   io_data,cnt
+  if_z  and   io_data,#255
+
+':ina255
+'  if_z  wrlong io_data,io_bord_ptr
+'  if_z  add   io_data,#1
+'  if_z  jmp   #:ina255
+
+  if_z  jmp   #:in_done
+        mov   io_off,#255
+        cmp   io_port,xfefe wz
+  if_z  mov   io_off,#0
+        cmp   io_port,xfdfe wz
+  if_z  mov   io_off,#1
+        cmp   io_port,xfbfe wz
+  if_z  mov   io_off,#2
+        cmp   io_port,xf7fe wz
+  if_z  mov   io_off,#3
+        cmp   io_port,xeffe wz
+  if_z  mov   io_off,#4
+        cmp   io_port,xdffe wz
+  if_z  mov   io_off,#5
+        cmp   io_port,xbffe wz
+  if_z  mov   io_off,#6
+        cmp   io_port,x7ffe wz
+  if_z  mov   io_off,#7
+        cmp   io_port,x00fe wz
+  if_z  jmp   #:allkeys
+
+':ina2552
+'  if_nz  wrlong io_data,io_bord_ptr
+'  if_nz  add   io_data,#1
+'  if_nz  jmp   #:ina2552
+
+        cmp   io_off,#255 wz
+  if_z  jmp   #:in_done
+
+
+        add   io_off,io_states_ptr
+        rdbyte io_data,io_off
+        shr   io_data,#1
+        jmp   #:in_done
+:allkeys
+        rdlong io_data,io_states_ptr
+        mov   io_tmp,io_states_ptr
+        add   io_tmp,#4
+        rdlong io_tmp,io_tmp
+        or    io_data,io_tmp
+        mov   io_tmp,io_data
+        ror   io_tmp,#8
+        or    io_data,io_tmp
+        ror   io_tmp,#8
+        or    io_data,io_tmp
+        ror   io_tmp,#8
+        or    io_data,io_tmp
+:in_done
+        rdlong io_comm,io_comm_ptr
+        or    io_comm,xffffffff
+        and   io_data,#255
+        sub   io_comm,io_data
+        and   io_comm,x00ffffff
+        wrlong io_comm,io_comm_ptr
+        jmp   #io_loop
+
+
+xfefe   long  $fefe
+xfdfe   long  $fdfe
+xfbfe   long  $fbfe
+xf7fe   long  $f7fe
+xeffe   long  $effe
+xdffe   long  $dffe
+xbffe   long  $bffe
+x7ffe   long  $7ffe
+x00fe   long  $00fe
+
+xffff   long  $ffff
+x00ffffff  long  $00ffffff
+xffffffff  long  $ffffffff
+
+io_bord_ptr long 0 '@border
+io_comm_ptr long 0 '@io_command
+io_states_ptr long 0 '@keystates
+
+io_off  res   1
+io_tmp  res   1
+io_data res   1
+io_comm res   1
+io_cmd  res   1
+io_port res   1
+
+PRI io_handler | cmd, port
+'' I/O command handler running in a separate cog
+        repeat
+                repeat while (io_command & $ff000000) == 0
+                cmd := io_command >> 24
+                port := io_command >> 8
+                case cmd
+                        io_cmd_out:
+                                io_out(port & $ffff, io_command & $ff)
+                        io_cmd_in:
+                                io_command := (io_command & !$ff) | io_in(port & $ffff)
+                        io_cmd_break:
+'                               io_break(port)
+                io_command &= $00ffffff
+
+PRI io_out(port, data)
+    if (port&255)==254
+        border:=data&7 'vga.setborder(data)
+
+PRI io_in(port) | data
+    data := %00000000
+
+    if(port&255)==255
+      return cnt&255
+
+'    scrx:=0
+'    scry:=0
+'    str(string("Port("))
+'    hex(port,4)
+'    str(string(")"))
+
+    case port
+#ifdef HAVE_KBD
+'    if port==$fefe
+        $fefe:  ' SHIFT, Z, X, C, V
+            data := kbd.keyvals(0)
+'    if port==$fdfe
+        $fdfe:  ' A, S, D, F, G
+            data := kbd.keyvals(1)
+'    if port==$fbfe
+        $fbfe:  ' Q, W, E, R, T
+            data := kbd.keyvals(2)
+'    if port==$f7fe
+        $f7fe:  ' 1, 2, 3, 4, 5
+            data := kbd.keyvals(3)
+'    if port==$effe
+        $effe:  ' 0, 9, 8, 7, 6
+            data := kbd.keyvals(4)
+'    if port==$dffe
+        $dffe:  ' P, O, I, U, Y
+            data := kbd.keyvals(5)
+'    if port==$bffe
+        $bffe:  ' ENTER, L, K, J, H
+            data := kbd.keyvals(6)
+'    if port==$7ffe
+        $7ffe:  ' SPACE, SYM SHIFT, M, N, B
+            data := kbd.keyvals(7)
+'    if port==$00fe
+        $00fe:  ' ALL KEYS
+            data := kbd.keyallvals
+#endif
+'    str(string("="))
+'    hex(255-data,2)
+'    str(string(" "))
+'    crlf
+    kbd.clearkeys
+    return 255-data
+
+
+PRI io_break(base)
+{
+        str(msg_break_bc)
+        hex(word[base][ 0],4)
+        str(msg_break_de)
+        hex(word[base][ 1],4)
+        str(msg_break_hl)
+        hex(word[base][ 2],4)
+        str(msg_break_af)
+        hex(word[base][ 3],4)
+        str(msg_break_bc2)
+        hex(word[base][ 4],4)
+        str(msg_break_de2)
+        hex(word[base][ 5],4)
+        str(msg_break_hl2)
+        hex(word[base][ 6],4)
+        str(msg_break_af2)
+        hex(word[base][ 7],4)
+        str(msg_break_r)
+        hex((byte[base][16] & $7f) | byte[base][17],4)
+        str(msg_break_iff1)
+        hex(byte[base][18] & 1, 1)
+        str(msg_break_iff2)
+        hex((byte[base][18] >> 1) & 1, 1)
+        str(msg_break_im)
+        hex((byte[base][18] >> 2) & 3, 1)
+        str(msg_break_ix)
+        hex(word[base][10],4)
+        str(msg_break_iy)
+        hex(word[base][11],4)
+        str(msg_break_sp)
+        hex(word[base][12],4)
+        str(msg_break_pc)
+        hex(word[base][13],4)
+        crlf
+}
+
+DAT
+'io_stack        long    0[64]
+
+iobuff_ptr      long    0
+
+#ifdef HAVE_VGA
+border          long    0
+vsync           long    0
+screen          byte    0[6144]
+attrs           byte    $38[1024] 'should only be 768 bytes, but writes are on 1K boundaries.
+#endif HAVE_VGA
+
+msg_break_bc    byte    " BC:",0
+msg_break_de    byte    " DE:",0
+msg_break_hl    byte    " HL:",0
+msg_break_af    byte    " AF:",0
+msg_break_bc2   byte    " BC'",0
+msg_break_de2   byte    " DE'",0
+msg_break_hl2   byte    " HL'",0
+msg_break_af2   byte    " AF'",0
+msg_break_r     byte    13,10, "R:",0
+msg_break_iff1  byte    " IFF1:",0
+msg_break_iff2  byte    " IFF2:",0
+msg_break_im    byte    " IM:",0
+msg_break_i     byte    " I:",0
+msg_break_ix    byte    " IX:",0
+msg_break_iy    byte    " IY:",0
+msg_break_sp    byte    " SP:",0
+msg_break_pc    byte    " PC:",0
+msg_break_data  byte    " = ",0

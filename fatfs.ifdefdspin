@@ -1,0 +1,685 @@
+'******************************************************************************
+'*  fatfs.spin - FAT 12/16/32 support for YAZ80 and CP/M
+'*
+'*  (c) Juergen Buchmueller <pullmoll@t-online.de>
+'*
+'* $Id: fatfs.spin,v 1.13 2010-05-27 14:33:49 pm Exp $
+'******************************************************************************
+CON
+#ifndef XMM_FUNCS
+#ifdef  DracBladeProp
+#define XMM_FUNCS
+#elif defined(TriBladeProp)
+#define XMM_FUNCS
+#elif defined(RamBladeProp)
+#define XMM_FUNCS
+#endif  RamBladeProp
+#endif  XMM_FUNCS
+	FAT12			=	12
+	FAT16			=	16
+	FAT32			=	32
+
+	mbr_slot_0		=	$1be		' MBR parition slot 0
+	mbr_slot_1		=	$1ce		' MBR parition slot 0
+	mbr_slot_2		=	$1de		' MBR parition slot 0
+	mbr_slot_3		=	$1ee		' MBR parition slot 0
+	mbr_boot_flag		=	$00		' bootable flag in parition slot
+	mbr_chs_start		=	$01		' C/H/S of partition start in parition slot
+	mbr_part_type		=	$04		' partition type in partition slot
+	mbr_chs_end		=	$05		' C/H/S of partition start in parition slot
+	mbr_lba_first		=	$08		' LBA first sector in parition slot
+	mbr_lba_length		=	$0c		' LBA length in sectors in parition slot
+
+	fat12_max_cluster	=	$ff0
+	fat16_max_cluster	=	$fff0
+	fat32_max_cluster	=	$ffffff0
+
+	fat16_pbr_jmp		=	$00		' JMP $xx in the partition boot record
+	fat16_pbr_oem		=	$03		' OEM identifier (8 bytes)
+	fat16_bpb_bps		=	$0b		' bytes per sector (word)
+	fat16_bpb_spc		=	$0d		' sectors per cluster value (byte)
+	fat16_bpb_res		=	$0e		' reserved sectors (word)
+	fat16_bpb_nft		=	$10		' number of fats (byte)
+	fat16_bpb_rde		=	$11		' root directory entries (word)
+	fat16_bpb_sms		=	$13		' small sector count (word)
+	fat16_bpb_md		=	$15		' media descriptor (byte)
+	fat16_bpb_spf		=	$16		' sectors per fat (word)
+	fat16_bpb_spt		=	$18		' sectors per track (word)
+	fat16_bpb_noh		=	$1a		' number of heads (word)
+	fat16_bpb_hsc		=	$1c		' hidden sector count (long)
+	fat16_bpb_lsc		=	$20		' large sector count (long)
+	fat16_epb_pdn		=	$24		' physical drive number (byte) in the extended parameter block
+	fat16_epb_rsv		=	$25		' reserved byte (byte)
+	fat16_epb_ebs		=	$26		' extended boot signature (byte)
+	fat16_epb_vsn		=	$27		' volume serial number (long)
+	fat16_epb_vl		=	$2b		' volume label (11 bytes)
+	fat16_epb_si		=	$36		' system identifier "FAT12" or "FAT16" (8 bytes)
+	fat16_boot_code		=	$3e		' boot code
+
+	fat32_pbr_jmp		=	$00		' JMP $xx in the partition boot record
+	fat32_pbr_oem		=	$03		' OEM identifier (8 bytes)
+	fat32_bpb_bps		=	$0b		' bytes per sector (word)
+	fat32_bpb_spc		=	$0d		' sectors per cluster value (byte)
+	fat32_bpb_res		=	$0e		' reserved sectors (word)
+	fat32_bpb_nft		=	$10		' number of fats (byte)
+	fat32_bpb__rde		=	$11		' root directory entries (word) [unused]
+	fat32_bpb__sms		=	$13		' small sector count (word) [unused]
+	fat32_bpb_md		=	$15		' media descriptor (byte)
+	fat32_bpb__spf		=	$16		' sectors per fat (word) [unused]
+	fat32_bpb_spt		=	$18		' sectors per track (word)
+	fat32_bpb_noh		=	$1a		' number of heads (word)
+	fat32_bpb_hsc		=	$1c		' hidden sector count (long)
+	fat32_bpb_lsc		=	$20		' large sector count (long)
+	fat32_bpb_spf		=	$24		' sectors per fat (long)
+	fat32_bpb_exf		=	$28		' extended flags (word)
+	fat32_bpb_fsv		=	$2a		' file system version (byte)
+	fat32_bpb_rcn		=	$2c		' root cluster number (long)
+	fat32_bpb_fsi		=	$30		' file system information sector (word)
+	fat32_bpb_bbs		=	$32		' backup boot sector (word)
+	fat32_bpb_rs1		=	$34		' reserved 1 (6 bytes)
+	fat32_bpb_rs2		=	$3a		' reserved 2 (6 bytes)
+	fat32_epb_pdn		=	$40		' physical drive number (byte) in the extended parameter block
+	fat32_epb_rsv		=	$41		' reserved byte (byte)
+	fat32_epb_ebs		=	$42		' extended boot signature (byte)
+	fat32_epb_vsn		=	$43		' volume serial number (long)
+	fat32_epb_vl		=	$47		' volume label (11 bytes)
+	fat32_epb_si		=	$52		' system identifier "FAT32   " (8 bytes)
+	fat32_boot_code		=	$5a		' boot code
+
+	dent_name		=	$00		' filename
+	dent_ext		=	$08		' extension
+	dent_attr		=	$0b		' file attributes
+	dent_attr_R		=	$01		' read only attribute
+	dent_attr_H		=	$02		' hidden attribute
+	dent_attr_S		=	$04		' system attribute
+	dent_attr_L		=	$08		' volume label attribute
+	dent_attr_D		=	$10		' directory attribute
+	dent_attr_A		=	$20		' archive attribute
+	dent_attr_VSE		=	$0f		' attribute of long filename entries
+	dent_case		=	$0c		' filename case of short filename (FAT32)
+	dent_case_f		=	$08		' filename is lowercase
+	dent_case_e		=	$10		' extension is lowercase
+	dent_ctime_ms		=	$0d		' creation time milliseconds (FAT32)
+	dent_ctime		=	$0e		' creation time (DOS time format)
+	dent_cdate		=	$10		' creation date (DOS date format)
+	dent_adate		=	$12		' last access date (DOS date format)
+	dent_clush		=	$14		' start cluster high (FAT32!?)
+	dent_mtime		=	$16		' modification time (DOS time format)
+	dent_mdate		=	$18		' modification date (DOS date format)
+	dent_clusl		=	$1a		' start cluster low
+	dent_fsize		=	$1c		' filesize (long)
+	dent_bytes		=	$20		' bytes per directory entry
+	REC_SHIFT		=	12		' shift factor to divide record / entry
+	REC_MASK		=	4095		' mask to divide record / entry
+
+	fileptr_pos		=	32		' offset of the buffer position inside a fileptr structure
+	fileptr_sec		=	36		' offset of the sector number inside a fileptr structure
+	fileptr_ofs		=	40		' offset of the file offset inside a fileptr structure
+	fileptr_bytes		=	44
+
+VAR
+	long	iobuff_ptr				' pointer to iobuff
+	long	iobuff_sec				' current sector in iobuff
+	long	boot0					' boot sector (sector 0 of partition)
+	long	lblen					' length of parition in LB
+	long	fat_type				' may be 12, 16 or 32
+	long	bps					' bytes per sector
+	long	dps					' directory entries per sector
+	long	spc					' sectors per cluster
+	long	rsc					' reserved sectors
+	long	nft					' number of fats
+	long	rde					' root directory entries
+	long	sms					' small sectors
+	long	md					' media descriptor
+	long	spf					' secctors per fat
+	long	spt					' sectors per track
+	long	noh					' number of heads
+	long	hsc					' hidden sector count
+	long	lsc					' large sector count
+	long	rcn					' root cluster number (FAT32)
+	long	vsn					' volume serial number
+	long	tcl					' total clusters
+	long	fat					' FAT LBA
+	long	cl2					' cluster 2 LBA
+	long	root					' root directory LBA
+	long	cwd					' current working directory cluster
+	long	files[5]				' file structure pointers
+	byte	dent0[dent_bytes]			' current directory entry
+	byte	volumelabel[11+1]			' volume label of the disk
+	byte	sysname[8+1]				' system identifier buffer
+	byte	name[12+1]				' dotted name buffer
+        byte    mask[12]
+
+OBJ
+	spi	: "spi_warp"				' Extended memory manager and SD card access
+
+PUB start(doPin, clkPin, diPin, csPin) : okay | i
+	okay := \spi.start_explicit(doPin, clkPin, diPin, csPin)
+	if okay < 0
+		return -1
+	fat_type := 0
+	iobuff_ptr := spi.get_memory
+	iobuff_sec := -1
+	repeat i from 0 to 4
+		files[i] := iobuff_ptr + 512 + i * fileptr_bytes
+		longfill(files[i], 0, fileptr_bytes / 4)
+	return 0
+
+PUB stop : okay
+	okay := \spi.stop
+	fat_type := 0
+	iobuff_ptr := 0
+
+PUB get_memory
+	return \spi.get_memory
+
+PUB get_SPI_command
+	return \spi.get_SPI_command
+
+PUB read_sector(sec) : okay
+	if sec == iobuff_sec
+		return 0
+	okay := \spi.readblock(sec, iobuff_ptr)
+	if okay < 0
+		return -1
+	iobuff_sec := sec
+	return 0
+
+PUB write_sector(sec) : okay
+	okay := \spi.writeblock(sec, iobuff_ptr)
+	if okay < 0
+		return -1
+	iobuff_sec := sec
+	return 0
+
+#ifdef XMM_FUNCS
+PUB read_xmm_ram(hub_address, ram_address, length) : okay
+	okay := \spi.readram(hub_address, ram_address, length)
+	if okay < 0
+		return -1
+	return 0
+
+PUB write_xmm_ram(hub_address, ram_address, length) : okay
+	okay := \spi.writeram(hub_address, ram_address, length)
+	if okay < 0
+		return -1
+	return 0
+#endif XMM_FUNCS
+
+PUB mount : okay | n
+	okay := read_sector(0)
+	if okay < 0
+		return -1
+	boot0 := getlong(iobuff_ptr, mbr_slot_0 + mbr_lba_first)
+	lblen := getlong(iobuff_ptr, mbr_slot_0 + mbr_lba_length)	' number of sectors in first partition
+	okay := read_sector(boot0)
+	if okay < 0
+		return -1
+
+	bps := getword(iobuff_ptr, fat16_bpb_bps)		' bytes per sector
+	dps := bps / dent_bytes					' directory entries per sector
+	spc := getbyte(iobuff_ptr, fat16_bpb_spc)		' sectors per cluster
+	rsc := getword(iobuff_ptr, fat16_bpb_res)		' reserved sector count
+	nft := getbyte(iobuff_ptr, fat16_bpb_nft)		' number of FATs
+	rde := getword(iobuff_ptr, fat16_bpb_rde)		' root directory entries
+	sms := getword(iobuff_ptr, fat16_bpb_sms)		' small sectors (max. 65535)
+	md  := getbyte(iobuff_ptr, fat16_bpb_md)		' media descriptor
+	spf := getword(iobuff_ptr, fat16_bpb_spf)		' sectors per FAT
+	spt := getword(iobuff_ptr, fat16_bpb_spt)		' sectors per track
+	noh := getword(iobuff_ptr, fat16_bpb_noh)		' number of heads
+	hsc := getlong(iobuff_ptr, fat16_bpb_hsc)		' hidden sector count
+	lsc := getlong(iobuff_ptr, fat16_bpb_lsc)		' large sector count
+	vsn := getlong(iobuff_ptr, fat16_epb_vsn)		' volume serial number
+	if hsc == 0						' if hidden sector count isn't specified
+		hsc := boot0					' use the partition table offset to the boot sector
+	bytemove(@volumelabel, iobuff_ptr + fat16_epb_vl, 11)
+	volumelabel[11] := 0
+	bytemove(@sysname, iobuff_ptr + fat32_epb_si, 8)	' get system identifier
+	sysname[8] := 0
+	tcl := lsc / spc					' large sector count / sectors per cluster
+	if strcomp(sysname, string("FAT32   ")) or tcl => fat16_max_cluster
+		fat_type := FAT32
+		bytemove(@volumelabel, iobuff_ptr + fat32_epb_vl, 11)
+		volumelabel[11] := 0
+		spf := getlong(iobuff_ptr, fat32_bpb_spf)	' sectors per FAT
+		rcn := getlong(iobuff_ptr, fat32_bpb_rcn)	' root cluster number
+		vsn := getlong(iobuff_ptr, fat32_epb_vsn)	' volume serial number
+		fat := hsc + rsc				' 1st FAT LBA
+		cl2 := fat + nft * spf				' cluster 0 LBA
+		root := cl2 + (rcn - 2) * spc			' root directory LBA
+		cwd := rcn					' current working directory cluster is rcn
+		rde := spc * dps				' root directory entries (first cluster)
+		n := rcn					' scan root directory clusters
+		repeat while (n := fat32_next(n)) > 0
+			rde += spc * dps			' more root directory entries
+	else
+		bytemove(@sysname, iobuff_ptr + fat16_epb_si, 8)' get system identifier
+		fat := boot0 + rsc				' 1st FAT LBA
+		root := fat + nft * spf				' root directory LBA
+		cl2 := root + (dent_bytes * rde + bps-1) / bps	' cluster 0 LBA
+		cwd := 0					' current working directory cluster = 0 (none)
+		if strcomp(sysname, string("FAT12   "))
+			fat_type := FAT12
+		elseif strcomp(sysname, string("FAT16   "))
+			fat_type := FAT16
+		elseif tcl < fat12_max_cluster
+			fat_type := FAT12
+		else
+			fat_type := FAT16
+
+PUB get_type
+	if fat_type == 0
+		return -1
+	return fat_type
+
+PUB get_serialno
+	if fat_type == 0
+		return -1
+	return vsn
+
+PUB get_volume_label
+	if fat_type == 0
+		return -1
+	return @volumelabel
+
+PUB get_dir_size
+	if fat_type == 0
+		return -1
+	return rde
+
+PUB isdir(de_ptr)
+	if (byte[de_ptr][dent_attr] == dent_attr_VSE)	' long filename entry?
+		return false
+	if (byte[de_ptr][dent_attr] & dent_attr_D) <> 0
+		return true
+	return false
+
+PUB isdot(de_ptr)
+	return byte[de_ptr][0] == "." and byte[de_ptr][1] == " "
+
+PUB isreg(de_ptr)
+	if (byte[de_ptr][dent_attr] & (dent_attr_L | dent_attr_D)) == 0
+		return true
+	return false
+
+PUB match(de_ptr, match_ptr) | i, j, k
+	i := 0
+	j := 0
+	repeat while (i < strsize(match_ptr)) and (j < 11)
+		case byte[match_ptr][i]
+			"*":
+				if j => dent_ext
+					k := dent_attr
+				else
+					k := dent_ext
+				repeat while j < k
+					mask[j++] := "?"
+			".":
+				if (j == 0) or (j > 0 and mask[j-1] == ".")
+					mask[j++] := "."
+				else
+					repeat while j < dent_ext
+						mask[j++] := " "
+			other:
+				mask[j++] := byte[match_ptr][i]
+		i++
+	repeat while j < dent_attr
+		mask[j++] := " "
+	repeat i from 0 to 10
+		if mask[i] == "?"
+			next
+		if mask[i] <> byte[de_ptr][i]
+			return false
+	return true
+
+PUB chdir(de_ptr) : rec
+	if (byte[de_ptr][dent_attr] & dent_attr_D) <> dent_attr_D
+		return -1
+	cwd := 0
+	if fat_type == FAT32
+		cwd := getword(de_ptr, dent_clush) << 16	' get cluster high bits
+	cwd |= getword(de_ptr, dent_clusl)
+	if fat_type == FAT32 and cwd == 0
+		cwd := rcn
+
+PUB opendir(de_ptr) : rec | okay, sec
+	if fat_type == FAT32 or cwd <> 0
+		rec := cwd << REC_SHIFT
+		sec := cl2 + (cwd - 2) * spc
+	else
+		rec := 0
+		sec := root
+	okay := read_sector(sec)
+	if okay < 0
+		return -1
+	bytemove(de_ptr, iobuff_ptr, dent_bytes)
+
+PUB readdir(rec, de_ptr) : nrec | okay, clus, sec, i
+	okay := 0
+	clus := rec >> REC_SHIFT
+	i := rec & REC_MASK
+	i++
+	if fat_type == FAT32
+		if i // dps == 0
+			' next sector or cluster
+			if i == spc * dps
+				clus := fat_next(clus)
+				if clus < 0
+					return -1	' end of cluster chain
+				i := 0
+		sec := cl2 + (clus - 2) * spc + (i / dps)
+		nrec := clus << REC_SHIFT | i
+	elseif clus
+		if i // dps == 0
+			' next sector or cluster
+			if i == spc * dps
+				clus := fat_next(clus)
+				if clus < 0
+					return -1	' end of cluster chain
+				i := 0
+		sec := cl2 + (clus - 2) * spc + (i / dps)
+		nrec := clus << REC_SHIFT | i
+	else
+		if i => rde
+			return -1		' end of root directory entries
+		sec := root + i / dps
+		nrec := i
+	okay := read_sector(sec)
+	if okay < 0
+		return -1
+	bytemove(de_ptr, iobuff_ptr + (i // dps) * dent_bytes, dent_bytes)
+	if byte[de_ptr][dent_name] == 0
+		return -1				' found end of directory
+
+PUB find_file(fname_ptr) : dent | rec
+	rec := opendir(@dent0)
+	if rec < 0
+		return -1
+	get_dent_name(@dent0, @name)
+	if strcomp(@name, fname_ptr)
+		return @dent0
+	repeat
+		rec := readdir(rec, @dent0)
+		if rec < 0
+			return -1
+		if dent0[dent_name] == $e5		' deleted entry?
+			next
+		if dent0[dent_attr] == dent_attr_vse	' VFAT entry?
+			next
+		get_dent_name(@dent0, @name)
+		if strcomp(@name, fname_ptr)
+			return @dent0
+
+PUB get_dent_name(dent, fname_ptr) | i, j
+	if fat_type == 0
+		return -1
+	j := 0
+	repeat i from dent_name to dent_name+7
+		if byte[dent][i] == $20
+			quit
+		byte[fname_ptr][j++] := byte[dent][i]
+	byte[fname_ptr][j++] := "."
+	repeat i from dent_ext to dent_ext+2
+		if byte[dent][i] == $20
+			quit
+		byte[fname_ptr][j++] := byte[dent][i]
+	if j > 0 and byte[fname_ptr][j-1] == "."
+		j--
+	byte[fname_ptr][j] := 0
+
+PUB get_dent_size(dent) : size
+	if fat_type == 0
+		return -1
+	size := getlong(dent, dent_fsize)
+
+PUB get_dent_date_time(dent, dtbuff) : size | pos, date, time, y, m, d, hh, mm, ss
+	if fat_type == 0
+		return -1
+	date := getword(dent, dent_cdate)
+	time := getword(dent, dent_ctime)
+	y := (date >> 9) + 1980
+	m := (date >> 5) & 15
+	d := date & 31
+	hh := (time >> 11) & 31
+	mm := (time >> 5) & 63
+	ss := (time & 31) * 2
+	pos := 0
+	byte[dtbuff][pos++] := "0" + y / 1000
+	byte[dtbuff][pos++] := "0" + (y / 100) // 10
+	byte[dtbuff][pos++] := "0" + (y / 10) // 10
+	byte[dtbuff][pos++] := "0" + y // 10
+	byte[dtbuff][pos++] := "-"
+	byte[dtbuff][pos++] := "0" + (m / 10) // 10
+	byte[dtbuff][pos++] := "0" + m // 10
+	byte[dtbuff][pos++] := "-"
+	byte[dtbuff][pos++] := "0" + (d / 10) // 10
+	byte[dtbuff][pos++] := "0" + d // 10
+	byte[dtbuff][pos++] := " "
+	byte[dtbuff][pos++] := "0" + (hh / 10) // 10
+	byte[dtbuff][pos++] := "0" + hh // 10
+	byte[dtbuff][pos++] := ":"
+	byte[dtbuff][pos++] := "0" + (mm / 10) // 10
+	byte[dtbuff][pos++] := "0" + mm // 10
+	byte[dtbuff][pos++] := ":"
+	byte[dtbuff][pos++] := "0" + (ss / 10) // 10
+	byte[dtbuff][pos++] := "0" + ss // 10
+	byte[dtbuff][pos] := 0
+
+PUB get_dent_cluster(dent) : cluster
+	if fat_type == 0
+		return -1
+	cluster := 0
+	if fat_type == FAT32
+		cluster := getword(dent, dent_clush) << 16
+	cluster += getword(dent, dent_clusl)
+
+PUB get_dent_first_sector(dent) : sector | cluster
+	if fat_type == 0
+		return -1
+	cluster := get_dent_cluster(dent)
+	sector := cl2 + (cluster - 2) * spc
+
+PUB get_dent_next_sector(dent, curr_sector) : next_sector | cluster, sector
+	if fat_type == 0
+		return -1
+	next_sector := curr_sector + 1
+	if (next_sector - cl2) // spc <> 0
+		return
+	cluster := get_dent_cluster(dent)
+	sector := cl2 + (cluster - 2) * spc
+	repeat while curr_sector < sector or curr_sector => sector + spc
+		cluster := fat_next(cluster)
+		if cluster < 0
+			return -1
+		sector := cl2 + (cluster - 2) * spc
+	cluster := fat_next(cluster)
+	if cluster < 0
+		return -1
+	next_sector := cl2 + (cluster - 2) * spc
+
+PUB fopen(filename, mode) : fp | dent, sector, i
+	dent := find_file(filename)
+	if dent < 0
+		return dent
+	repeat i from 0 to 4
+		if byte[files[i]][0] == 0
+			quit
+	if i > 4
+		return -1
+	fp := files[i]
+	longmove(fp, dent, dent_bytes / 4)
+	sector := get_dent_first_sector(fp)
+	putlong(fp, fileptr_pos, 0)
+	putlong(fp, fileptr_sec, sector)
+	putlong(fp, fileptr_ofs, 0)
+	read_sector(sector)
+
+PUB fclose(fp) | i
+	' find the file structure that fp points to
+	repeat i from 0 to 4
+		if files[i] == fp
+			quit
+	if i > 4
+		return -1
+	' zap the file structure
+	longfill(fp, 0, (dent_bytes + 3 * 4) / 4)
+
+PUB fread(fp, buffer, size) | fpos, fsec, fofs, smax, offs, avail
+	fpos := getlong(fp, fileptr_pos)
+	fsec := getlong(fp, fileptr_sec)
+	fofs := getlong(fp, fileptr_ofs)
+	smax := getlong(fp, dent_fsize)
+	offs := 0
+	if fofs + size > smax
+		size := smax - fofs
+	repeat while size > 0
+		if fpos => bps
+			fsec := get_dent_next_sector(fp, fsec)
+			if fsec =< 0
+				putlong(fp, fileptr_pos, fpos)
+				putlong(fp, fileptr_sec, fsec)
+				putlong(fp, fileptr_ofs, fofs)
+				if offs > 0
+					return offs
+				return -1
+			if read_sector(fsec) < 0
+				return -1
+			fpos := 0
+		avail := (bps - fpos) <# size
+		if ((fpos | avail | offs) & 3) <> 0
+			bytemove(buffer + offs, iobuff_ptr + fpos, avail)
+		else
+			longmove(buffer + offs, iobuff_ptr + fpos, avail/4)
+		offs += avail
+		fpos += avail
+		fofs += avail
+		size -= avail
+	putlong(fp, fileptr_pos, fpos)
+	putlong(fp, fileptr_sec, fsec)
+	putlong(fp, fileptr_ofs, fofs)
+	return offs
+
+PUB fgetc(fp) | fpos, fsec, fofs, smax
+	fpos := getlong(fp, fileptr_pos)
+	fsec := getlong(fp, fileptr_sec)
+	fofs := getlong(fp, fileptr_ofs)
+	smax := getlong(fp, dent_fsize)
+	if fofs => smax
+		return -1
+	if fpos => bps
+		fsec := get_dent_next_sector(fp, fsec)
+		if fsec < 0
+			return -1
+		fpos := 0
+	result := byte[iobuff_ptr][fpos]
+	fpos++
+	fofs++
+	putlong(fp, fileptr_pos, fpos)
+	putlong(fp, fileptr_sec, fsec)
+	putlong(fp, fileptr_ofs, fofs)
+
+PUB ftell(fp)
+	return getlong(fp, fileptr_ofs)
+
+PUB fseek(fp, offs) | fpos, fofs, fsec
+	fpos := offs // bps
+	offs -= fpos
+	fsec := get_dent_first_sector(fp)
+	fofs := 0
+	repeat while offs > 0
+		fsec := get_dent_next_sector(fp, fsec)
+		if fsec < 0
+			return -1
+		fofs += bps
+		offs -= bps
+	fofs += fpos
+	putlong(fp, fileptr_pos, fpos)
+	putlong(fp, fileptr_sec, fsec)
+	putlong(fp, fileptr_ofs, fofs)
+
+PUB fat_next(clus) : nclus
+	case fat_type
+		FAT12: nclus := fat12_next(clus)
+		FAT16: nclus := fat16_next(clus)
+		FAT32: nclus := fat32_next(clus)
+		other: nclus := -1
+
+PRI fat12_next(clus) : nclus | okay, n, s
+	if clus < 2 or clus => fat12_max_cluster
+		return -1
+	n := 3 * (clus / 2)
+	s := fat + n >> 9
+	n &= 511
+	if (n + 3) > bps - 1
+		okay := \spi.readblock(s + 1, iobuff_ptr)
+		bytemove(iobuff_ptr + 512, iobuff_ptr, 4)
+	okay := read_sector(s)			' read FAT sector
+	if okay < 0
+		return -1
+	if clus & 1
+		' odd cluster
+		nclus := ((byte[iobuff_ptr][n+1] & $f0) << 4) + byte[iobuff_ptr][n+3]
+	else
+		nclus := ((byte[iobuff_ptr][n+1] & $0f) << 8) + byte[iobuff_ptr][n]
+	if nclus < 2 or nclus => fat12_max_cluster
+		return -1
+
+PRI fat16_next(clus) : nclus | okay, n, s
+	if clus < 2 or clus => fat16_max_cluster
+		return -1
+	n := clus << 1
+	s := fat + n >> 9
+	n := n & 511
+	okay := read_sector(s)			' read FAT sector
+	if okay < 0
+		return -1
+	nclus := getword(iobuff_ptr, n)
+	if nclus < 2 or nclus => fat16_max_cluster
+		return -1
+
+PRI fat32_next(clus) : nclus | okay, n, s
+	if clus < 2 or clus => fat32_max_cluster
+		return -1
+	n := clus << 2
+	s := fat + n >> 9
+	n := n & 511
+	okay := read_sector(s)			' read FAT sector
+	if okay < 0
+		return -1
+	nclus := getlong(iobuff_ptr, n)
+	if nclus < 2 or nclus => fat32_max_cluster
+		return -1
+
+PRI getlong(buff, offs)
+	if ((buff + offs) & 3) <> 0
+		result := byte[buff][offs] + 256*byte[buff][offs+1] + 65536*byte[buff][offs+2] + 16777216*byte[buff][offs+3]
+	else
+		result := long[buff][offs/4]
+
+PRI getword(buff, offs)
+	if ((buff + offs) & 1) <> 0
+		result := byte[buff][offs] + 256*byte[buff][offs+1]
+	else
+		result := word[buff][offs/2]
+
+PRI getbyte(buff, offs)
+	result := byte[buff][offs]
+
+PRI putlong(buff, offs, val)
+	if ((buff + offs) & 3) <> 0
+		byte[buff][offs+0] := val & 255
+		byte[buff][offs+1] := (val >> 8) & 255
+		byte[buff][offs+2] := (val >> 16) & 255
+		byte[buff][offs+3] := (val >> 24) & 255
+	else
+		long[buff][offs/4] := val
+
+PRI putword(buff, offs, val)
+	if ((buff + offs) & 3) <> 0
+		byte[buff][offs+0] := val & 255
+		byte[buff][offs+1] := (val >> 8) & 255
+	else
+		word[buff][offs/2] := val
+
+PRI putbyte(buff, offs, val)
+	byte[buff][offs] := val & 255
